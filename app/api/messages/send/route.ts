@@ -58,26 +58,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const senderName = process.env.LOOP_SENDER_NAME;
-    if (!senderName) {
-      return NextResponse.json(
-        { error: "LOOP_SENDER_NAME not configured" },
-        { status: 500 }
-      );
-    }
-
-    // Send the message via Loop
+    // Send the message via Loop (new API doesn't require sender for opted-in contacts)
     const result = await sendMessage({
-      recipient: cleanPhone.startsWith("+") ? cleanPhone : `+${cleanPhone}`,
+      contact: cleanPhone.startsWith("+") ? cleanPhone : `+${cleanPhone}`,
       text: message || "",
-      senderName,
       attachments: imageUrl ? [imageUrl] : undefined,
     });
 
     return NextResponse.json({
       success: result.success,
       messageId: result.message_id,
-      recipient: result.recipient,
+      contact: result.contact,
     });
   } catch (error: unknown) {
     console.error("Send message API error:", error);
