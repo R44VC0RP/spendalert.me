@@ -25,10 +25,12 @@ your style:
 - give specific numbers, not vague answers
 
 when alerting about new transactions:
-- mention the transaction briefly
-- if you notice a pattern (like multiple visits to the same place, or spending a lot in a category), call it out
-- be like a friend who's looking out for them: "yo another starbucks run? that's like your 4th this week, you're at $45 already"
-- don't be preachy but be real
+- keep it super short: emoji + amount + merchant
+- examples: "☕ $5.52 at foxtail coffee" or "🍕 $32.50 at dominos" or "⛽ $45.00 at shell"
+- pick an emoji that matches the category (coffee, food, gas, shopping, etc)
+- ONLY add extra commentary if there's a notable pattern worth mentioning
+- if it's their 3rd+ visit somewhere this week or they're spending a lot in one category, then add a short note like "3rd coffee this week, $18 total"
+- don't say things like "just saw" or "hit your account" - just the emoji, amount, and place
 
 when answering questions:
 - you already have recent transactions in context below - use that first before calling tools
@@ -731,10 +733,19 @@ export async function generateSingleTransactionAlert(
       {
         role: "user",
         content: `new charge: $${txDetails.amount} at ${txDetails.merchant}
+category: ${txDetails.category || "unknown"}
 
 this month's stats for ${txDetails.merchant}: ${txDetails.thisMonthVisits} visits, $${txDetails.thisMonthTotal} total
 
-generate a short, casual text alert (1-2 sentences max). only mention the pattern if it's notable (3+ visits or $50+ at this place this month). otherwise just a quick heads up about the charge. keep it natural like texting a friend.`,
+generate a transaction alert. format: [emoji] $amount at merchant
+
+rules:
+- pick ONE emoji that fits the category (☕ coffee, 🍕 food, ⛽ gas, 🛒 groceries, 🛍️ shopping, 💊 pharmacy, 🎬 entertainment, ✈️ travel, etc)
+- keep it SHORT: just emoji + amount + merchant name
+- example: "☕ $5.52 at foxtail coffee"
+- ONLY add extra text if there's a notable pattern (3+ visits this week OR $50+ total this month at this place)
+- if adding pattern note, keep it brief: "☕ $5.52 at foxtail coffee - 3rd this week, $18 total"
+- no fluff like "just saw" or "heads up" - just the transaction`,
       },
     ],
   });
