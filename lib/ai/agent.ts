@@ -619,7 +619,7 @@ export async function generateResponse(
 
   const startTime = Date.now();
   const { text, steps, toolCalls, toolResults } = await generateText({
-    model: anthropic("claude-sonnet-4-5"),
+    model: anthropic("claude-opus-4-5"),
     system: systemPrompt,
     messages: messagesForAI,
     tools,
@@ -727,7 +727,7 @@ export async function generateSingleTransactionAlert(
   const systemPrompt = buildSystemPrompt(recentTxsForContext);
 
   const { text } = await generateText({
-    model: anthropic("claude-sonnet-4-5"),
+    model: anthropic("claude-opus-4-5"),
     system: systemPrompt,
     messages: [
       {
