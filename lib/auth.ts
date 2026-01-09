@@ -21,9 +21,9 @@ export const auth = betterAuth({
   },
   plugins: [
     passkey({
-      rpID: isProduction ? "spendalert.me" : "inbound.new",
+      rpID: isProduction ? "spend.ryan.ceo" : "inbound.new",
       rpName: "SpendAlert",
-      origin: isProduction ? "https://spendalert.me" : devOrigin,
+      origin: isProduction ? "https://spend.ryan.ceo" : devOrigin,
     }),
     nextCookies(), // must be last
   ],
