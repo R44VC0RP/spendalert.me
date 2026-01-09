@@ -79,16 +79,22 @@ export interface LoopWebhookPayload {
     | "inbound_call"
     | "unknown";
   contact: string; // Phone number in E.164 format or email
-  text: string;
+  text?: string;
   message_id: string;
   webhook_id: string;
   api_version?: string;
+  type?: "text" | "reaction" | "audio" | "attachments" | "sticker" | "location"; // Alternative to message_type
   message_type?: "text" | "reaction" | "audio" | "attachments" | "sticker" | "location";
   channel?: "imessage" | "sms" | "rcs";
   sender?: string; // Sender ID
+  sender_name?: string; // Sender name/email
   subject?: string;
   attachments?: string[]; // URLs to download files (for inbound)
   reaction?: "love" | "like" | "dislike" | "laugh" | "emphasize" | "question" | "unknown";
+  reaction_type?: "love" | "like" | "dislike" | "laugh" | "emphasize" | "question"; // Alternative field
+  reaction_event?: "placed" | "removed"; // Whether reaction was added or removed
+  reaction_direction?: "inbound" | "outbound"; // Direction of the reaction
+  organization_id?: string;
   thread_id?: string;
   error_code?: number; // For message_failed
   passthrough?: string;

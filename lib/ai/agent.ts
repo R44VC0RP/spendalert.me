@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db, transactions, aiMessages, aiConversations } from "@/lib/db";
 import { eq, desc, and, gte, lte, gt, lt, like, or, sql } from "drizzle-orm";
 import type { Transaction, AiMessage } from "@/lib/db/schema";
+import { sendReaction as loopSendReaction } from "@/lib/loop";
 
 // Create Anthropic client pointing to OpenCode Zen
 const anthropic = createAnthropic({
@@ -44,7 +45,21 @@ spending insights to watch for:
 available tools (use sparingly - context usually has what you need):
 - searchTransactions: search by keyword, date range, amount filters - use only if searching for something specific
 - getSpendingSummary: get spending breakdown by category or merchant
-- getTopMerchants: see top spending locations`;
+- getTopMerchants: see top spending locations
+- sendReaction: react to a message with love/like/laugh/etc - use this like you would in a normal text convo
+- noResponse: use this when you don't need to say anything (e.g., user just reacted to your message, or sent something that doesn't need a reply)
+
+reacting to messages:
+- you can react to messages just like a human would
+- if someone sends you something funny, laugh at it
+- if they share good news, heart it
+- if they just react to your message (like hearting it), you usually don't need to respond at all - just use noResponse
+- be natural about it - don't react to everything, only when it feels right
+
+images:
+- users can send you screenshots or images
+- if they send an image, describe what you see and help them with whatever they're asking about
+- if it's a screenshot of a transaction or receipt, help them understand it`;
 
 // Get current date/time in EST
 function getCurrentDateTimeEST(): { date: string; time: string; dayOfWeek: string } {
@@ -449,8 +464,29 @@ const transactionTools = {
 // Type for the message sender callback
 type MessageSender = (message: string) => Promise<void>;
 
-// Create tools with the sendMessage capability
-function createTools(sendMessageFn?: MessageSender) {
+// Type for the reaction sender callback
+type ReactionSender = (messageId: string, reaction: "love" | "like" | "dislike" | "laugh" | "emphasize" | "question") => Promise<void>;
+
+// Response result that can indicate no response needed
+export interface AgentResponse {
+  text: string | null;
+  didReact: boolean;
+  noResponseNeeded: boolean;
+}
+
+// State tracker for tool execution
+interface ToolState {
+  noResponseCalled: boolean;
+  didReact: boolean;
+}
+
+// Create tools with the sendMessage and sendReaction capabilities
+function createTools(
+  state: ToolState,
+  sendMessageFn?: MessageSender,
+  sendReactionFn?: ReactionSender,
+  inboundMessageId?: string
+) {
   return {
     ...transactionTools,
     
@@ -467,29 +503,103 @@ function createTools(sendMessageFn?: MessageSender) {
         return { sent: false, reason: "no message sender configured" };
       },
     }),
+    
+    sendReaction: tool({
+      description: "React to the user's message with an iMessage tapback reaction. Use this naturally like you would in a real text conversation - heart something nice, laugh at something funny, etc. You can react AND send a text response, or just react without saying anything.",
+      inputSchema: z.object({
+        reaction: z.enum(["love", "like", "dislike", "laugh", "emphasize", "question"]).describe("The reaction to send: love (heart), like (thumbs up), dislike (thumbs down), laugh (haha), emphasize (!!), question (?)"),
+      }),
+      execute: async ({ reaction }) => {
+        if (sendReactionFn && inboundMessageId) {
+          await sendReactionFn(inboundMessageId, reaction);
+          state.didReact = true;
+          return { sent: true, reaction, messageId: inboundMessageId };
+        }
+        return { sent: false, reason: "no reaction sender configured or no message to react to" };
+      },
+    }),
+    
+    noResponse: tool({
+      description: "Use this when you don't need to send a text response. For example: when the user just reacted to your message (like hearting it), when they sent something that doesn't need a reply, or after you've already reacted and don't want to add text.",
+      inputSchema: z.object({
+        reason: z.string().optional().describe("Optional: why no response is needed"),
+      }),
+      execute: async ({ reason }) => {
+        state.noResponseCalled = true;
+        console.log(`[Agent] noResponse called: ${reason || "no reason given"}`);
+        return { noResponse: true, reason };
+      },
+    }),
   };
+}
+
+// Input options for generateResponse
+export interface GenerateResponseOptions {
+  conversationId: string;
+  userMessage: string;
+  imageUrls?: string[];
+  inboundMessageId?: string;
+  isReaction?: boolean;
+  reactionType?: string;
+  sendMessageFn?: MessageSender;
+  sendReactionFn?: ReactionSender;
 }
 
 // Generate a response to a user message
 export async function generateResponse(
-  conversationId: string,
-  userMessage: string,
-  sendMessageFn?: MessageSender
-): Promise<string> {
+  options: GenerateResponseOptions
+): Promise<AgentResponse> {
+  const {
+    conversationId,
+    userMessage,
+    imageUrls,
+    inboundMessageId,
+    isReaction,
+    reactionType,
+    sendMessageFn,
+    sendReactionFn,
+  } = options;
+
   console.log(`[Agent] ========== GENERATING RESPONSE ==========`);
   console.log(`[Agent] Conversation ID: ${conversationId}`);
   console.log(`[Agent] User message: "${userMessage}"`);
+  console.log(`[Agent] Images: ${imageUrls?.length || 0}`);
+  console.log(`[Agent] Is reaction: ${isReaction}, type: ${reactionType}`);
+  console.log(`[Agent] Inbound message ID: ${inboundMessageId}`);
   
   const context = await loadConversationContext(conversationId);
 
+  // Build the user message content (text + optional images)
+  let userContent: string | Array<{ type: "text"; text: string } | { type: "image"; image: URL }>;
+  
+  if (imageUrls && imageUrls.length > 0) {
+    // Multi-part message with images
+    const parts: Array<{ type: "text"; text: string } | { type: "image"; image: URL }> = [];
+    
+    // Add images first
+    for (const url of imageUrls) {
+      parts.push({ type: "image", image: new URL(url) });
+    }
+    
+    // Add text (or a prompt if no text)
+    const textPart = userMessage || "[User sent an image]";
+    parts.push({ type: "text", text: textPart });
+    
+    userContent = parts;
+  } else {
+    userContent = userMessage;
+  }
+
   const messagesForAI = [
     ...context.messages,
-    { role: "user" as const, content: userMessage },
+    { role: "user" as const, content: userContent },
   ];
 
   console.log(`[Agent] === MESSAGES BEING SENT TO AI (${messagesForAI.length} total) ===`);
   messagesForAI.forEach((m, i) => {
-    const preview = m.content.length > 150 ? m.content.substring(0, 150) + "..." : m.content;
+    const preview = typeof m.content === "string" 
+      ? (m.content.length > 150 ? m.content.substring(0, 150) + "..." : m.content)
+      : `[Multi-part: ${Array.isArray(m.content) ? m.content.length : 1} parts]`;
     console.log(`[Agent]   [${i + 1}] ${m.role.toUpperCase()}: ${preview}`);
   });
   console.log(`[Agent] === END MESSAGES FOR AI ===`);
@@ -498,10 +608,12 @@ export async function generateResponse(
   const systemPrompt = buildSystemPrompt(context.recentTransactions);
   
   console.log(`[Agent] System prompt length: ${systemPrompt.length} chars`);
-  console.log(`[Agent] Available tools: searchTransactions, getSpendingSummary, getTopMerchants, sendMessage`);
+  console.log(`[Agent] Available tools: searchTransactions, getSpendingSummary, getTopMerchants, sendMessage, sendReaction, noResponse`);
   console.log(`[Agent] Calling Claude Sonnet 4.5 via OpenCode Zen...`);
 
-  const tools = createTools(sendMessageFn);
+  // Create state tracker and tools
+  const state: ToolState = { noResponseCalled: false, didReact: false };
+  const tools = createTools(state, sendMessageFn, sendReactionFn, inboundMessageId);
 
   const startTime = Date.now();
   const { text, steps, toolCalls, toolResults } = await generateText({
@@ -516,6 +628,7 @@ export async function generateResponse(
   console.log(`[Agent] AI response received in ${duration}ms`);
   console.log(`[Agent] Steps taken: ${steps?.length || 0}`);
   console.log(`[Agent] Tool calls made: ${toolCalls?.length || 0}`);
+  console.log(`[Agent] State: noResponseCalled=${state.noResponseCalled}, didReact=${state.didReact}`);
   
   if (toolCalls && toolCalls.length > 0) {
     console.log(`[Agent] === TOOL CALLS ===`);
@@ -527,11 +640,15 @@ export async function generateResponse(
   }
 
   console.log(`[Agent] === FINAL RESPONSE ===`);
-  console.log(`[Agent] ${text}`);
+  console.log(`[Agent] ${text || "(no text response)"}`);
   console.log(`[Agent] === END FINAL RESPONSE ===`);
   console.log(`[Agent] ========== END GENERATION ==========`);
 
-  return text;
+  return {
+    text: state.noResponseCalled ? null : (text || null),
+    didReact: state.didReact,
+    noResponseNeeded: state.noResponseCalled,
+  };
 }
 
 // Get recent transaction history for context
