@@ -88,7 +88,7 @@ export default function DashboardPage() {
       if (result.error) {
         setError(result.error.message || "Failed to add passkey");
       } else {
-        setConnectionMessage("Passkey added successfully!");
+        setConnectionMessage("Passkey Added Successfully!");
         setTimeout(() => setConnectionMessage(null), 3000);
       }
     } catch (err) {
@@ -204,7 +204,7 @@ export default function DashboardPage() {
   // Handle successful Plaid connection
   const handlePlaidSuccess = (itemId: string, institution: string | null) => {
     setConnectionMessage(
-      `Successfully connected ${institution || "your account"}! Transactions will sync shortly.`
+      `Successfully Connected ${institution || "Your Account"}! Transactions Will Sync Shortly.`
     );
     setTimeout(() => {
       fetchAccounts();
@@ -240,7 +240,7 @@ export default function DashboardPage() {
       }, 5000);
     } catch (err) {
       console.error("Error refreshing:", err);
-      setError("Failed to refresh transactions");
+      setError("Failed To Refresh Transactions");
     } finally {
       setIsRefreshing(false);
     }
@@ -269,14 +269,14 @@ export default function DashboardPage() {
   const hasAccounts = accounts.length > 0;
 
   return (
-    <div className="min-h-screen bg-background safe-area-inset">
+    <div className="min-h-screen bg-background safe-area-inset font-sans">
       {/* Nav */}
       <nav className="border-b border-border safe-area-top">
         <div className="mx-auto flex h-16 max-w-2xl items-center justify-between px-6">
-          <span className="text-sm tracking-tight">spendalert</span>
+          <span className="text-sm font-medium tracking-tight">SpendAlert</span>
           <div className="flex items-center gap-3">
-            <Button variant="ghost" size="sm" onClick={() => { fetchAccounts(); fetchTransactions(); }}>
-              refresh
+            <Button variant="ghost" size="sm" className="font-medium" onClick={() => { fetchAccounts(); fetchTransactions(); }}>
+              Refresh
             </Button>
             {hasAccounts && (
               <Button
@@ -284,9 +284,9 @@ export default function DashboardPage() {
                 size="sm"
                 onClick={() => setShowRefreshWarning(true)}
                 disabled={isRefreshing}
-                className="text-muted-foreground"
+                className="font-medium text-muted-foreground"
               >
-                {isRefreshing ? "syncing..." : "sync"}
+                {isRefreshing ? "Syncing..." : "Sync"}
               </Button>
             )}
             <Button
@@ -294,17 +294,17 @@ export default function DashboardPage() {
               size="sm"
               onClick={handleAddPasskey}
               disabled={isAddingPasskey}
-              className="text-muted-foreground"
+              className="font-medium text-muted-foreground"
             >
-              {isAddingPasskey ? "adding..." : "add passkey"}
+              {isAddingPasskey ? "Adding..." : "Add Passkey"}
             </Button>
             <Button
               variant="ghost"
               size="sm"
               onClick={handleSignOut}
-              className="text-muted-foreground"
+              className="font-medium text-muted-foreground"
             >
-              sign out
+              Sign Out
             </Button>
           </div>
         </div>
@@ -313,14 +313,14 @@ export default function DashboardPage() {
       <main className="mx-auto max-w-2xl px-6 py-12">
         {/* Connection Message */}
         {connectionMessage && (
-          <div className="mb-8 border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
+          <div className="mb-8 border border-dashed border-border p-4 text-center text-sm font-medium text-muted-foreground">
             {connectionMessage}
           </div>
         )}
 
         {/* Error Message */}
         {error && (
-          <div className="mb-8 border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
+          <div className="mb-8 border border-dashed border-border p-4 text-center text-sm font-medium text-muted-foreground">
             {error}
           </div>
         )}
@@ -328,11 +328,11 @@ export default function DashboardPage() {
         {/* No accounts connected state */}
         {!hasAccounts && (
           <div className="py-20 text-center">
-            <p className="mb-2 text-xs uppercase tracking-widest text-muted-foreground">
-              No accounts connected
+            <p className="mb-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">
+              No Accounts Connected
             </p>
-            <p className="mb-8 text-muted-foreground">
-              Connect your bank account to start tracking transactions.
+            <p className="mb-8 font-medium text-muted-foreground">
+              Connect Your Bank Account To Start Tracking Transactions.
             </p>
             <PlaidLinkButton
               onSuccess={handlePlaidSuccess}
@@ -346,14 +346,14 @@ export default function DashboardPage() {
           <>
             <div className="mb-8">
               <div className="mb-4 flex items-baseline justify-between border-b border-dashed border-border pb-4">
-                <span className="text-xs uppercase tracking-widest text-muted-foreground">
+                <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
                   Accounts
                 </span>
                 <button
                   onClick={selectAllAccounts}
-                  className="text-xs text-muted-foreground hover:text-foreground"
+                  className="text-xs font-medium text-muted-foreground hover:text-foreground"
                 >
-                  select all
+                  Select All
                 </button>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -361,7 +361,7 @@ export default function DashboardPage() {
                   <button
                     key={account.id}
                     onClick={() => toggleAccount(account.id)}
-                    className={`flex items-center gap-2 rounded border px-3 py-1.5 text-xs font-mono transition-colors ${
+                    className={`flex items-center gap-2 rounded border px-3 py-1.5 text-xs font-medium transition-colors ${
                       getAccountColor(account.mask, selectedAccountIds.has(account.id))
                     }`}
                   >
@@ -389,24 +389,24 @@ export default function DashboardPage() {
 
             {/* Account Statement Header */}
             <div className="mb-12 flex items-baseline justify-between border-b border-dashed border-border pb-4">
-              <span className="text-xs uppercase tracking-widest text-muted-foreground">
+              <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
                 Account Statement
               </span>
-              <span className="text-xs text-muted-foreground">
+              <span className="text-xs font-medium text-muted-foreground">
                 {getCurrentPeriod()}
               </span>
             </div>
 
             {/* Loading State */}
             {isLoading && (
-              <div className="py-12 text-center text-sm text-muted-foreground">
-                Loading transactions...
+              <div className="py-12 text-center text-sm font-medium text-muted-foreground">
+                Loading Transactions...
               </div>
             )}
 
             {/* Transactions Table */}
             {!isLoading && transactions.length > 0 && (
-              <table className="w-full text-sm font-mono tracking-normal">
+              <table className="w-full text-sm font-medium tracking-normal">
                 <tbody>
                   {transactions.map((tx) => (
                     <tr
@@ -423,7 +423,7 @@ export default function DashboardPage() {
                           {tx.merchantName || tx.name}
                           {tx.pending && (
                             <span className="ml-2 text-xs text-muted-foreground">
-                              (pending)
+                              (Pending)
                             </span>
                           )}
                         </div>
@@ -445,27 +445,27 @@ export default function DashboardPage() {
                       <tr>
                         <td className="py-4"></td>
                         <td className="py-4 text-muted-foreground">
-                          Total spending
+                          Total Spending
                         </td>
-                        <td className="py-4 text-right tabular-nums font-medium">
+                        <td className="py-4 text-right tabular-nums font-bold">
                           -{formatCurrency(summary.totalSpending)}
                         </td>
                       </tr>
                       <tr>
                         <td className="py-4"></td>
                         <td className="py-4 text-muted-foreground">
-                          Total income
+                          Total Income
                         </td>
-                        <td className="py-4 text-right tabular-nums font-medium">
+                        <td className="py-4 text-right tabular-nums font-bold">
                           {formatCurrency(summary.totalIncome)}
                         </td>
                       </tr>
                       <tr>
                         <td className="py-4"></td>
                         <td className="py-4 text-muted-foreground">
-                          Net cash flow
+                          Net Cash Flow
                         </td>
-                        <td className={`py-4 text-right tabular-nums font-medium ${
+                        <td className={`py-4 text-right tabular-nums font-bold ${
                           summary.netCashFlow >= 0 ? "" : "text-muted-foreground"
                         }`}>
                           {summary.netCashFlow >= 0 ? "" : "-"}
@@ -480,17 +480,17 @@ export default function DashboardPage() {
 
             {/* Empty State */}
             {!isLoading && transactions.length === 0 && selectedAccountIds.size > 0 && (
-              <div className="py-12 text-center text-sm text-muted-foreground">
-                <p>No transactions yet.</p>
-                <p className="mt-2">Transactions will appear once your bank syncs.</p>
+              <div className="py-12 text-center text-sm font-medium text-muted-foreground">
+                <p>No Transactions Yet.</p>
+                <p className="mt-2">Transactions Will Appear Once Your Bank Syncs.</p>
               </div>
             )}
 
             {/* No accounts selected */}
             {!isLoading && selectedAccountIds.size === 0 && (
-              <div className="py-12 text-center text-sm text-muted-foreground">
-                <p>No accounts selected.</p>
-                <p className="mt-2">Select an account above to view transactions.</p>
+              <div className="py-12 text-center text-sm font-medium text-muted-foreground">
+                <p>No Accounts Selected.</p>
+                <p className="mt-2">Select An Account Above To View Transactions.</p>
               </div>
             )}
           </>
@@ -500,9 +500,9 @@ export default function DashboardPage() {
       {/* Footer */}
       <footer className="border-t border-border safe-area-bottom">
         <div className="mx-auto max-w-2xl px-6 py-8">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>spendalert</span>
-            <span>{summary?.transactionCount || 0} transactions</span>
+          <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
+            <span>SpendAlert</span>
+            <span>{summary?.transactionCount || 0} Transactions</span>
           </div>
         </div>
       </footer>
@@ -511,20 +511,21 @@ export default function DashboardPage() {
       {showRefreshWarning && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="mx-4 max-w-sm rounded-lg border border-border bg-background p-6 shadow-lg">
-            <h3 className="mb-2 font-medium">Sync with Plaid?</h3>
-            <p className="mb-4 text-sm text-muted-foreground">
-              This will request fresh transaction data from your bank via Plaid.
-              This is a <span className="font-medium text-foreground">paid API call</span> (~$0.10-0.50 per request)
-              billed to your Plaid account.
+            <h3 className="mb-2 font-bold">Sync With Plaid?</h3>
+            <p className="mb-4 text-sm font-medium text-muted-foreground">
+              This Will Request Fresh Transaction Data From Your Bank Via Plaid.
+              This Is A <span className="font-bold text-foreground">Paid API Call</span> (~$0.10-0.50 Per Request)
+              Billed To Your Plaid Account.
             </p>
-            <p className="mb-6 text-xs text-muted-foreground">
-              Note: Plaid automatically syncs 1-4 times daily for free. Only use this if you need
-              immediate updates.
+            <p className="mb-6 text-xs font-medium text-muted-foreground">
+              Note: Plaid Automatically Syncs 1-4 Times Daily For Free. Only Use This If You Need
+              Immediate Updates.
             </p>
             <div className="flex justify-end gap-3">
               <Button
                 variant="ghost"
                 size="sm"
+                className="font-medium"
                 onClick={() => setShowRefreshWarning(false)}
               >
                 Cancel
@@ -532,6 +533,7 @@ export default function DashboardPage() {
               <Button
                 variant="default"
                 size="sm"
+                className="font-bold"
                 onClick={handleForceRefresh}
               >
                 Sync Now
