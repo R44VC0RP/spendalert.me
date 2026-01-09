@@ -4,8 +4,12 @@ import { db, plaidItems, plaidAccounts, transactions } from "@/lib/db";
 import { eq } from "drizzle-orm";
 import type { Transaction as PlaidTransaction, RemovedTransaction } from "plaid";
 import type { Transaction } from "@/lib/db/schema";
-import { start } from "workflow/api";
-import { sendTransactionAlertWorkflow } from "@/workflows/transaction-alert";
+import { sendTransactionAlert } from "@/lib/loop";
+import {
+  generateSingleTransactionAlert,
+  getOrCreateConversation,
+  saveMessage,
+} from "@/lib/ai/agent";
 
 /**
  * Workflow to sync transactions from Plaid when SYNC_UPDATES_AVAILABLE webhook fires.
@@ -65,11 +69,14 @@ export async function transactionSyncWorkflow(itemId: string) {
   if (spendingTxs.length > 0) {
     console.log(`[Workflow] Triggering alerts for ${spendingTxs.length} spending transactions`);
     
-    // Start a separate workflow for each transaction alert (run in parallel)
+    // Get conversation once for all alerts
+    const conversationId = await getConversationForAlerts();
+    
+    // Send alert for each transaction
     for (const tx of spendingTxs) {
-      await start(sendTransactionAlertWorkflow, [tx]);
+      await sendSingleTransactionAlert(tx, conversationId);
       
-      // Small delay between starting alert workflows to avoid rate limiting
+      // Small delay between alerts to avoid rate limiting
       if (spendingTxs.length > 1) {
         await sleep("1s");
       }
@@ -235,4 +242,40 @@ async function updateAccountBalances(accessToken: string) {
     console.warn("[Workflow] Could not update account balances:", e);
     // Don't throw - this is non-critical
   }
+}
+
+const ALERT_RECIPIENT = process.env.LOOP_RECIPIENT_PHONE || "+19046086893";
+
+async function getConversationForAlerts(): Promise<string> {
+  "use step";
+  
+  return getOrCreateConversation(ALERT_RECIPIENT);
+}
+
+async function sendSingleTransactionAlert(tx: Transaction, conversationId: string): Promise<void> {
+  "use step";
+  
+  const merchant = tx.merchantName || tx.name;
+  const amount = parseFloat(tx.amount);
+
+  console.log(`[Workflow] Sending alert for: $${amount.toFixed(2)} at ${merchant}`);
+
+  // Generate AI alert message
+  const alertMessage = await generateSingleTransactionAlert(tx);
+
+  if (!alertMessage) {
+    console.log(`[Workflow] AI generated empty alert for ${merchant}, skipping`);
+    return;
+  }
+
+  // Send the alert via Loop/iMessage
+  const sendResult = await sendTransactionAlert(ALERT_RECIPIENT, alertMessage);
+
+  // Save to conversation history
+  await saveMessage(conversationId, "assistant", alertMessage, sendResult.message_id, tx.id);
+
+  console.log(`[Workflow] Alert sent for ${merchant}:`, {
+    messageId: sendResult.message_id,
+    success: sendResult.success,
+  });
 }
