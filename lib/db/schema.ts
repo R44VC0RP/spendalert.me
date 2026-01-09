@@ -219,8 +219,28 @@ export const aiMessages = pgTable(
   ]
 );
 
+// Pending messages buffer for debouncing rapid messages
+export const pendingMessages = pgTable(
+  "pending_messages",
+  {
+    id: text("id").primaryKey(), // UUID
+    phoneNumber: text("phone_number").notNull(),
+    messages: text("messages").notNull(), // JSON array of {text, messageId, timestamp}
+    processingAt: timestamp("processing_at"), // When processing should start (null = not scheduled)
+    processedAt: timestamp("processed_at"), // When processing completed (null = not processed)
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("pending_messages_phone_idx").on(table.phoneNumber),
+    index("pending_messages_processing_idx").on(table.processingAt),
+  ]
+);
+
 // Types for AI tables
 export type AiConversation = typeof aiConversations.$inferSelect;
 export type NewAiConversation = typeof aiConversations.$inferInsert;
 export type AiMessage = typeof aiMessages.$inferSelect;
 export type NewAiMessage = typeof aiMessages.$inferInsert;
+export type PendingMessage = typeof pendingMessages.$inferSelect;
+export type NewPendingMessage = typeof pendingMessages.$inferInsert;
