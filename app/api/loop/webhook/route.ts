@@ -23,6 +23,11 @@ export async function POST(request: NextRequest) {
   try {
     const payload: LoopWebhookPayload = await request.json();
 
+    // Log the ENTIRE payload for debugging (images, reactions, etc.)
+    console.log("=== LOOP WEBHOOK FULL PAYLOAD ===");
+    console.log(JSON.stringify(payload, null, 2));
+    console.log("=== END LOOP WEBHOOK PAYLOAD ===");
+
     console.log("Received Loop webhook:", {
       event: payload.event,
       contact: payload.contact,

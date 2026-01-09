@@ -11,8 +11,8 @@ const anthropic = createAnthropic({
   apiKey: process.env.OPENCODE_ZEN_API_KEY || "",
 });
 
-// System prompt for the SpendAlert AI agent - texting style inspired by Poke
-const SYSTEM_PROMPT = `you're a personal finance assistant that texts users about their spending. you help them understand their transactions and answer questions about their money.
+// Base system prompt for the SpendAlert AI agent
+const BASE_SYSTEM_PROMPT = `you're a personal finance assistant that texts users about their spending. you help them understand their transactions and answer questions about their money.
 
 your style:
 - casual, lowercase texting style like you're a friend
@@ -30,7 +30,8 @@ when alerting about new transactions:
 - don't be preachy but be real
 
 when answering questions:
-- use the tools to get accurate data before responding
+- you already have recent transactions in context below - use that first before calling tools
+- only use tools if you need to search for something specific not in context
 - be specific with numbers and dates
 - if you spot something interesting in the data (unusual spending, trends), mention it
 
@@ -40,11 +41,118 @@ spending insights to watch for:
 - spending that's increased compared to usual patterns
 - subscriptions or recurring charges
 
-available tools:
-- sendMessage: send an interim text ONLY if you need to share something important before your final response (e.g., a surprising finding while you're still analyzing). don't use this just to say "let me check" - only use it if you have something meaningful to share mid-analysis
-- searchTransactions: search by keyword, date range, amount filters
+available tools (use sparingly - context usually has what you need):
+- searchTransactions: search by keyword, date range, amount filters - use only if searching for something specific
 - getSpendingSummary: get spending breakdown by category or merchant
 - getTopMerchants: see top spending locations`;
+
+// Get current date/time in EST
+function getCurrentDateTimeEST(): { date: string; time: string; dayOfWeek: string } {
+  const now = new Date();
+  const estOptions: Intl.DateTimeFormatOptions = { timeZone: "America/New_York" };
+  
+  const date = now.toLocaleDateString("en-US", { 
+    ...estOptions, 
+    weekday: "long",
+    year: "numeric", 
+    month: "long", 
+    day: "numeric" 
+  });
+  
+  const time = now.toLocaleTimeString("en-US", { 
+    ...estOptions, 
+    hour: "numeric", 
+    minute: "2-digit",
+    hour12: true 
+  });
+  
+  const dayOfWeek = now.toLocaleDateString("en-US", { 
+    ...estOptions, 
+    weekday: "long" 
+  });
+  
+  return { date, time, dayOfWeek };
+}
+
+// Build dynamic system prompt with context
+function buildSystemPrompt(recentTransactions: Transaction[]): string {
+  const { date, time, dayOfWeek } = getCurrentDateTimeEST();
+  
+  let prompt = BASE_SYSTEM_PROMPT;
+  
+  // Add current date/time
+  prompt += `\n\n---\nCURRENT DATE & TIME (EST):\n${dayOfWeek}, ${date}\n${time}\n`;
+  
+  // Calculate date boundaries for spending summaries
+  const now = new Date();
+  const todayStr = now.toISOString().split("T")[0];
+  
+  // Start of this week (Sunday)
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - now.getDay());
+  const startOfWeekStr = startOfWeek.toISOString().split("T")[0];
+  
+  // Start of this month
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfMonthStr = startOfMonth.toISOString().split("T")[0];
+  
+  // Calculate spending summaries
+  const spendingTxs = recentTransactions.filter(tx => parseFloat(tx.amount) > 0);
+  
+  const todaySpending = spendingTxs
+    .filter(tx => tx.date === todayStr)
+    .reduce((sum, tx) => sum + parseFloat(tx.amount), 0);
+  
+  const weekSpending = spendingTxs
+    .filter(tx => tx.date >= startOfWeekStr)
+    .reduce((sum, tx) => sum + parseFloat(tx.amount), 0);
+  
+  const monthSpending = spendingTxs
+    .filter(tx => tx.date >= startOfMonthStr)
+    .reduce((sum, tx) => sum + parseFloat(tx.amount), 0);
+  
+  const todayTxCount = spendingTxs.filter(tx => tx.date === todayStr).length;
+  const weekTxCount = spendingTxs.filter(tx => tx.date >= startOfWeekStr).length;
+  const monthTxCount = spendingTxs.filter(tx => tx.date >= startOfMonthStr).length;
+  
+  // Add spending summaries
+  prompt += `\n---\nSPENDING SUMMARY:\n`;
+  prompt += `Today: $${todaySpending.toFixed(2)} (${todayTxCount} transactions)\n`;
+  prompt += `This week: $${weekSpending.toFixed(2)} (${weekTxCount} transactions)\n`;
+  prompt += `This month: $${monthSpending.toFixed(2)} (${monthTxCount} transactions)\n`;
+  
+  // Add recent transactions context
+  if (recentTransactions.length > 0) {
+    prompt += `\n---\nRECENT TRANSACTIONS (last 7 days, for quick reference - you don't need to use tools for basic questions about these):\n`;
+    
+    // Group by date for readability
+    const byDate: Record<string, Transaction[]> = {};
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const sevenDaysAgoStr = sevenDaysAgo.toISOString().split("T")[0];
+    
+    const recentOnly = recentTransactions.filter(tx => tx.date >= sevenDaysAgoStr);
+    
+    for (const tx of recentOnly.slice(0, 50)) { // Limit to 50 most recent
+      if (!byDate[tx.date]) byDate[tx.date] = [];
+      byDate[tx.date].push(tx);
+    }
+    
+    for (const [txDate, txs] of Object.entries(byDate).sort((a, b) => b[0].localeCompare(a[0]))) {
+      prompt += `\n${txDate}:\n`;
+      for (const tx of txs) {
+        const amount = parseFloat(tx.amount);
+        const sign = amount > 0 ? "-" : "+";
+        prompt += `  ${sign}$${Math.abs(amount).toFixed(2)} ${tx.merchantName || tx.name}${tx.primaryCategory ? ` (${tx.primaryCategory})` : ""}${tx.pending ? " [pending]" : ""}\n`;
+      }
+    }
+  }
+  
+  return prompt;
+}
+
+// Max messages to keep in conversation history (keep as many as practical for context)
+const MAX_CONVERSATION_MESSAGES = 100;
 
 interface ConversationContext {
   conversationId: string;
@@ -79,13 +187,13 @@ export async function getOrCreateConversation(phoneNumber: string): Promise<stri
 async function loadConversationContext(conversationId: string): Promise<ConversationContext> {
   console.log(`[Agent] Loading conversation context for: ${conversationId}`);
   
-  // Get recent messages (last 20 for context)
+  // Get recent messages for context
   const messages = await db
     .select()
     .from(aiMessages)
     .where(eq(aiMessages.conversationId, conversationId))
     .orderBy(desc(aiMessages.createdAt))
-    .limit(20);
+    .limit(MAX_CONVERSATION_MESSAGES);
 
   console.log(`[Agent] Found ${messages.length} previous messages in conversation`);
 
@@ -386,7 +494,10 @@ export async function generateResponse(
   });
   console.log(`[Agent] === END MESSAGES FOR AI ===`);
   
-  console.log(`[Agent] System prompt length: ${SYSTEM_PROMPT.length} chars`);
+  // Build dynamic system prompt with context
+  const systemPrompt = buildSystemPrompt(context.recentTransactions);
+  
+  console.log(`[Agent] System prompt length: ${systemPrompt.length} chars`);
   console.log(`[Agent] Available tools: searchTransactions, getSpendingSummary, getTopMerchants, sendMessage`);
   console.log(`[Agent] Calling Claude Sonnet 4.5 via OpenCode Zen...`);
 
@@ -395,7 +506,7 @@ export async function generateResponse(
   const startTime = Date.now();
   const { text, steps, toolCalls, toolResults } = await generateText({
     model: anthropic("claude-sonnet-4-5"),
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: messagesForAI,
     tools,
     stopWhen: stepCountIs(5), // Allow multiple tool calls if needed
@@ -482,9 +593,23 @@ export async function generateSingleTransactionAlert(
     thisMonthTotal: totalSpent.toFixed(2),
   };
 
+  // Get recent transactions for context
+  const thirtyDaysAgoForContext = new Date();
+  thirtyDaysAgoForContext.setDate(thirtyDaysAgoForContext.getDate() - 30);
+  const contextDateStr = thirtyDaysAgoForContext.toISOString().split("T")[0];
+  
+  const recentTxsForContext = await db
+    .select()
+    .from(transactions)
+    .where(gte(transactions.date, contextDateStr))
+    .orderBy(desc(transactions.date))
+    .limit(100);
+  
+  const systemPrompt = buildSystemPrompt(recentTxsForContext);
+
   const { text } = await generateText({
     model: anthropic("claude-sonnet-4-5"),
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: [
       {
         role: "user",
