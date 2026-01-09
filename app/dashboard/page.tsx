@@ -71,10 +71,31 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
   const [showRefreshWarning, setShowRefreshWarning] = useState(false);
+  const [isAddingPasskey, setIsAddingPasskey] = useState(false);
 
   const handleSignOut = async () => {
     await authClient.signOut();
     router.push("/login");
+  };
+
+  const handleAddPasskey = async () => {
+    setIsAddingPasskey(true);
+    setError(null);
+    try {
+      const result = await authClient.passkey.addPasskey({
+        name: session?.user?.email || "passkey",
+      });
+      if (result.error) {
+        setError(result.error.message || "Failed to add passkey");
+      } else {
+        setConnectionMessage("Passkey added successfully!");
+        setTimeout(() => setConnectionMessage(null), 3000);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add passkey");
+    } finally {
+      setIsAddingPasskey(false);
+    }
   };
 
   // Fetch accounts
@@ -268,6 +289,15 @@ export default function DashboardPage() {
                 {isRefreshing ? "syncing..." : "sync"}
               </Button>
             )}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleAddPasskey}
+              disabled={isAddingPasskey}
+              className="text-muted-foreground"
+            >
+              {isAddingPasskey ? "adding..." : "add passkey"}
+            </Button>
             <Button
               variant="ghost"
               size="sm"
