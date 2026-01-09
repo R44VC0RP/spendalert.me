@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({
-      success: result.success,
+      success: result.success !== false, // Default to true if not explicitly false
       messageId: result.message_id,
       contact: result.contact,
     });
