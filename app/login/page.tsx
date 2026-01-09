@@ -10,10 +10,6 @@ export default function LoginPage() {
   const { data: session, isPending } = useSession();
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSignUp, setIsSignUp] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
 
   // Redirect if already authenticated
   useEffect(() => {
@@ -80,73 +76,6 @@ export default function LoginPage() {
     }
   };
 
-  const handleEmailSignIn = async () => {
-    if (!email || !password) {
-      setError("Please enter email and password");
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result = await authClient.signIn.email({
-        email,
-        password,
-        fetchOptions: {
-          onSuccess: () => {
-            router.push("/dashboard");
-          },
-          onError: (ctx) => {
-            setError(ctx.error.message || "Sign in failed");
-          },
-        },
-      });
-
-      if (result.error) {
-        setError(result.error.message || "Sign in failed");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleEmailSignUp = async () => {
-    if (!email || !password || !name) {
-      setError("Please fill in all fields");
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const result = await authClient.signUp.email({
-        email,
-        password,
-        name,
-        fetchOptions: {
-          onSuccess: () => {
-            router.push("/dashboard");
-          },
-          onError: (ctx) => {
-            setError(ctx.error.message || "Sign up failed");
-          },
-        },
-      });
-
-      if (result.error) {
-        setError(result.error.message || "Sign up failed");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "An error occurred");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   if (isPending) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
@@ -164,138 +93,48 @@ export default function LoginPage() {
       {/* Nav */}
       <nav className="border-b border-border safe-area-top">
         <div className="mx-auto flex h-16 max-w-sm items-center justify-center px-6">
-          <span className="text-sm tracking-tight">spendalert</span>
+          <span className="text-sm font-medium tracking-tight">SpendAlert</span>
         </div>
       </nav>
 
       <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center px-6 py-12">
         <div className="mb-12 text-center">
-          <h1 className="mb-2 text-lg font-medium">
-            {isSignUp ? "Create account" : "Welcome back"}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            {isSignUp
-              ? "Sign up to get started"
-              : "Sign in with your passkey or email"}
+          <h1 className="mb-2 text-lg font-bold">Welcome Back</h1>
+          <p className="text-sm font-medium text-muted-foreground">
+            Sign In With Your Passkey
           </p>
         </div>
 
         {/* Error Message */}
         {error && (
-          <div className="mb-6 border border-dashed border-border p-3 text-center text-sm text-muted-foreground">
+          <div className="mb-6 border border-dashed border-border p-3 text-center text-sm font-medium text-muted-foreground">
             {error}
           </div>
         )}
 
-        {/* Sign Up Form */}
-        {isSignUp ? (
-          <div className="space-y-4">
-            <input
-              type="text"
-              placeholder="Name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full border border-border bg-background px-4 py-3 text-sm placeholder:text-muted-foreground focus:border-foreground focus:outline-none"
-            />
-            <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full border border-border bg-background px-4 py-3 text-sm placeholder:text-muted-foreground focus:border-foreground focus:outline-none"
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full border border-border bg-background px-4 py-3 text-sm placeholder:text-muted-foreground focus:border-foreground focus:outline-none"
-            />
-            <Button
-              onClick={handleEmailSignUp}
-              disabled={isLoading}
-              className="w-full"
-              size="lg"
-            >
-              {isLoading ? "Creating account..." : "Sign up"}
-            </Button>
-            <div className="text-center">
-              <button
-                onClick={() => {
-                  setIsSignUp(false);
-                  setError(null);
-                }}
-                className="text-sm text-muted-foreground hover:text-foreground"
-              >
-                Already have an account? Sign in
-              </button>
-            </div>
-          </div>
-        ) : (
-          /* Sign In Form */
-          <div className="space-y-4">
-            <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="username webauthn"
-              className="w-full border border-border bg-background px-4 py-3 text-sm placeholder:text-muted-foreground focus:border-foreground focus:outline-none"
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password webauthn"
-              className="w-full border border-border bg-background px-4 py-3 text-sm placeholder:text-muted-foreground focus:border-foreground focus:outline-none"
-            />
-            <Button
-              onClick={handleEmailSignIn}
-              disabled={isLoading}
-              className="w-full"
-              size="lg"
-            >
-              {isLoading ? "Signing in..." : "Sign in with Email"}
-            </Button>
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <span className="w-full border-t border-border" />
-              </div>
-              <div className="relative flex justify-center text-xs uppercase">
-                <span className="bg-background px-2 text-muted-foreground">
-                  or
-                </span>
-              </div>
-            </div>
-            <Button
-              onClick={handlePasskeySignIn}
-              disabled={isLoading}
-              variant="outline"
-              className="w-full"
-              size="lg"
-            >
-              {isLoading ? "Authenticating..." : "Sign in with Passkey"}
-            </Button>
-            <div className="text-center">
-              <button
-                onClick={() => {
-                  setIsSignUp(true);
-                  setError(null);
-                }}
-                className="text-sm text-muted-foreground hover:text-foreground"
-              >
-                Need an account? Sign up
-              </button>
-            </div>
-          </div>
-        )}
+        {/* Sign In */}
+        <div className="space-y-4">
+          <input
+            type="email"
+            placeholder="Email"
+            autoComplete="username webauthn"
+            className="w-full border border-border bg-background px-4 py-3 text-sm font-medium placeholder:text-muted-foreground focus:border-foreground focus:outline-none"
+          />
 
-        <div className="mt-12 text-center text-xs text-muted-foreground">
+          <Button
+            onClick={handlePasskeySignIn}
+            disabled={isLoading}
+            className="w-full font-bold"
+            size="lg"
+          >
+            {isLoading ? "Authenticating..." : "Sign In With Passkey"}
+          </Button>
+        </div>
+
+        <div className="mt-12 text-center text-xs font-medium text-muted-foreground">
           <p>
-            {isSignUp
-              ? "After signing up, you can add a passkey from your dashboard."
-              : "Passkeys use your device's biometrics for secure, passwordless authentication."}
+            Passkeys use your device&apos;s biometrics (Face ID, Touch ID, etc.)
+            for secure, passwordless authentication.
           </p>
         </div>
       </main>
@@ -303,8 +142,8 @@ export default function LoginPage() {
       {/* Footer */}
       <footer className="border-t border-border safe-area-bottom">
         <div className="mx-auto max-w-sm px-6 py-6">
-          <div className="text-center text-xs text-muted-foreground">
-            spendalert
+          <div className="text-center text-xs font-medium text-muted-foreground">
+            SpendAlert
           </div>
         </div>
       </footer>
