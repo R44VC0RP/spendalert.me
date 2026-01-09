@@ -54,11 +54,14 @@ interface ConversationContext {
 
 // Get or create a conversation for a phone number
 export async function getOrCreateConversation(phoneNumber: string): Promise<string> {
+  console.log(`[Agent] Getting/creating conversation for ${phoneNumber}`);
+  
   const existing = await db.query.aiConversations.findFirst({
     where: eq(aiConversations.phoneNumber, phoneNumber),
   });
 
   if (existing) {
+    console.log(`[Agent] Found existing conversation: ${existing.id}`);
     return existing.id;
   }
 
@@ -68,11 +71,14 @@ export async function getOrCreateConversation(phoneNumber: string): Promise<stri
     phoneNumber,
   });
 
+  console.log(`[Agent] Created new conversation: ${id}`);
   return id;
 }
 
 // Load conversation context for the AI
 async function loadConversationContext(conversationId: string): Promise<ConversationContext> {
+  console.log(`[Agent] Loading conversation context for: ${conversationId}`);
+  
   // Get recent messages (last 20 for context)
   const messages = await db
     .select()
@@ -80,6 +86,8 @@ async function loadConversationContext(conversationId: string): Promise<Conversa
     .where(eq(aiMessages.conversationId, conversationId))
     .orderBy(desc(aiMessages.createdAt))
     .limit(20);
+
+  console.log(`[Agent] Found ${messages.length} previous messages in conversation`);
 
   // Get recent transactions (last 30 days)
   const thirtyDaysAgo = new Date();
@@ -93,12 +101,24 @@ async function loadConversationContext(conversationId: string): Promise<Conversa
     .orderBy(desc(transactions.date))
     .limit(100);
 
+  console.log(`[Agent] Found ${recentTxs.length} transactions from last 30 days`);
+
+  const formattedMessages = messages.reverse().map((m) => ({
+    role: m.role as "user" | "assistant",
+    content: m.content,
+  }));
+
+  // Log conversation history
+  console.log(`[Agent] === CONVERSATION HISTORY (${formattedMessages.length} messages) ===`);
+  formattedMessages.forEach((m, i) => {
+    const preview = m.content.length > 100 ? m.content.substring(0, 100) + "..." : m.content;
+    console.log(`[Agent]   [${i + 1}] ${m.role.toUpperCase()}: ${preview}`);
+  });
+  console.log(`[Agent] === END CONVERSATION HISTORY ===`);
+
   return {
     conversationId,
-    messages: messages.reverse().map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    })),
+    messages: formattedMessages,
     recentTransactions: recentTxs,
   };
 }
@@ -348,6 +368,10 @@ export async function generateResponse(
   userMessage: string,
   sendMessageFn?: MessageSender
 ): Promise<string> {
+  console.log(`[Agent] ========== GENERATING RESPONSE ==========`);
+  console.log(`[Agent] Conversation ID: ${conversationId}`);
+  console.log(`[Agent] User message: "${userMessage}"`);
+  
   const context = await loadConversationContext(conversationId);
 
   const messagesForAI = [
@@ -355,15 +379,46 @@ export async function generateResponse(
     { role: "user" as const, content: userMessage },
   ];
 
+  console.log(`[Agent] === MESSAGES BEING SENT TO AI (${messagesForAI.length} total) ===`);
+  messagesForAI.forEach((m, i) => {
+    const preview = m.content.length > 150 ? m.content.substring(0, 150) + "..." : m.content;
+    console.log(`[Agent]   [${i + 1}] ${m.role.toUpperCase()}: ${preview}`);
+  });
+  console.log(`[Agent] === END MESSAGES FOR AI ===`);
+  
+  console.log(`[Agent] System prompt length: ${SYSTEM_PROMPT.length} chars`);
+  console.log(`[Agent] Available tools: searchTransactions, getSpendingSummary, getTopMerchants, sendMessage`);
+  console.log(`[Agent] Calling Claude Sonnet 4.5 via OpenCode Zen...`);
+
   const tools = createTools(sendMessageFn);
 
-  const { text } = await generateText({
+  const startTime = Date.now();
+  const { text, steps, toolCalls, toolResults } = await generateText({
     model: anthropic("claude-sonnet-4-5"),
     system: SYSTEM_PROMPT,
     messages: messagesForAI,
     tools,
     stopWhen: stepCountIs(5), // Allow multiple tool calls if needed
   });
+  const duration = Date.now() - startTime;
+
+  console.log(`[Agent] AI response received in ${duration}ms`);
+  console.log(`[Agent] Steps taken: ${steps?.length || 0}`);
+  console.log(`[Agent] Tool calls made: ${toolCalls?.length || 0}`);
+  
+  if (toolCalls && toolCalls.length > 0) {
+    console.log(`[Agent] === TOOL CALLS ===`);
+    toolCalls.forEach((tc, i) => {
+      const args = 'args' in tc ? tc.args : {};
+      console.log(`[Agent]   [${i + 1}] ${tc.toolName}(${JSON.stringify(args).substring(0, 200)})`);
+    });
+    console.log(`[Agent] === END TOOL CALLS ===`);
+  }
+
+  console.log(`[Agent] === FINAL RESPONSE ===`);
+  console.log(`[Agent] ${text}`);
+  console.log(`[Agent] === END FINAL RESPONSE ===`);
+  console.log(`[Agent] ========== END GENERATION ==========`);
 
   return text;
 }
@@ -453,8 +508,12 @@ export async function saveMessage(
   loopMessageId?: string,
   transactionId?: string
 ): Promise<void> {
+  const messageId = crypto.randomUUID();
+  const preview = content.length > 100 ? content.substring(0, 100) + "..." : content;
+  console.log(`[Agent] Saving ${role} message to conversation ${conversationId}: "${preview}"`);
+  
   await db.insert(aiMessages).values({
-    id: crypto.randomUUID(),
+    id: messageId,
     conversationId,
     role,
     content,
@@ -467,4 +526,6 @@ export async function saveMessage(
     .update(aiConversations)
     .set({ lastMessageAt: new Date() })
     .where(eq(aiConversations.id, conversationId));
+    
+  console.log(`[Agent] Message saved with ID: ${messageId}`);
 }
