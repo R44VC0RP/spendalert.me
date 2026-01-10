@@ -1102,6 +1102,145 @@ rules:
   return text;
 }
 
+// Generate a spending summary (midweek or end-of-week)
+export async function generateSpendingSummary(
+  type: "midweek" | "end-of-week"
+): Promise<string> {
+  const now = new Date();
+  const estNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  
+  // Calculate date ranges
+  const today = now.toISOString().split("T")[0];
+  
+  // Start of this week (Sunday)
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - now.getDay());
+  const startOfWeekStr = startOfWeek.toISOString().split("T")[0];
+  
+  // Start of this month
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfMonthStr = startOfMonth.toISOString().split("T")[0];
+  
+  // Get this week's transactions
+  const weekTxs = await db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        gte(transactions.date, startOfWeekStr),
+        gt(transactions.amount, "0") // Only spending
+      )
+    )
+    .orderBy(desc(transactions.date));
+  
+  // Get this month's transactions
+  const monthTxs = await db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        gte(transactions.date, startOfMonthStr),
+        gt(transactions.amount, "0")
+      )
+    )
+    .orderBy(desc(transactions.date));
+  
+  // Calculate totals
+  const weekTotal = weekTxs.reduce((sum, tx) => sum + parseFloat(tx.amount), 0);
+  const monthTotal = monthTxs.reduce((sum, tx) => sum + parseFloat(tx.amount), 0);
+  
+  // Group by category
+  const categorySpending: Record<string, { total: number; count: number }> = {};
+  for (const tx of weekTxs) {
+    const cat = tx.primaryCategory || "UNCATEGORIZED";
+    if (!categorySpending[cat]) categorySpending[cat] = { total: 0, count: 0 };
+    categorySpending[cat].total += parseFloat(tx.amount);
+    categorySpending[cat].count += 1;
+  }
+  
+  // Top merchants this week
+  const merchantSpending: Record<string, { total: number; count: number }> = {};
+  for (const tx of weekTxs) {
+    const merchant = tx.merchantName || tx.name;
+    if (!merchantSpending[merchant]) merchantSpending[merchant] = { total: 0, count: 0 };
+    merchantSpending[merchant].total += parseFloat(tx.amount);
+    merchantSpending[merchant].count += 1;
+  }
+  
+  // Sort categories and merchants
+  const topCategories = Object.entries(categorySpending)
+    .sort((a, b) => b[1].total - a[1].total)
+    .slice(0, 5);
+  
+  const topMerchants = Object.entries(merchantSpending)
+    .sort((a, b) => b[1].total - a[1].total)
+    .slice(0, 5);
+  
+  // Build the prompt based on type
+  const dayOfWeek = estNow.toLocaleDateString("en-US", { weekday: "long" });
+  const promptType = type === "midweek" 
+    ? "midweek check-in (Wednesday)" 
+    : "end-of-week summary (Sunday)";
+  
+  const dataBlock = `
+SUMMARY TYPE: ${promptType}
+TODAY: ${dayOfWeek}, ${today}
+
+THIS WEEK SO FAR:
+- Total spent: $${weekTotal.toFixed(2)}
+- Transactions: ${weekTxs.length}
+
+TOP CATEGORIES THIS WEEK:
+${topCategories.map(([cat, data]) => `- ${cat}: $${data.total.toFixed(2)} (${data.count} transactions)`).join("\n")}
+
+TOP MERCHANTS THIS WEEK:
+${topMerchants.map(([merchant, data]) => `- ${merchant}: $${data.total.toFixed(2)} (${data.count} visits)`).join("\n")}
+
+MONTH TO DATE:
+- Total spent: $${monthTotal.toFixed(2)}
+- Transactions: ${monthTxs.length}
+`;
+
+  // Get recent transactions for context
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const contextDateStr = thirtyDaysAgo.toISOString().split("T")[0];
+  
+  const recentTxsForContext = await db
+    .select()
+    .from(transactions)
+    .where(gte(transactions.date, contextDateStr))
+    .orderBy(desc(transactions.date))
+    .limit(100);
+  
+  const systemPrompt = buildSystemPrompt(recentTxsForContext);
+
+  const { text } = await generateText({
+    model: anthropic("claude-opus-4-5"),
+    system: systemPrompt,
+    messages: [
+      {
+        role: "user",
+        content: `generate a ${type} spending summary text message.
+
+${dataBlock}
+
+guidelines:
+- keep it casual and brief like a text from a friend
+- lead with the most important insight (biggest category, notable pattern, etc)
+- mention 2-3 key things: total spent, top category, maybe a standout merchant
+- ${type === "midweek" ? "this is a midweek check-in to help them stay on track for the rest of the week" : "this is an end-of-week wrap-up, give them a sense of how the week went"}
+- if there are any concerning patterns (lots of eating out, frequent small purchases adding up), mention it gently
+- keep it SHORT - this is a text message, not a report
+- no emojis unless they really fit
+- example style: "hey, quick ${type === "midweek" ? "midweek" : "weekly"} update - you've spent $X so far this week, mostly on [category]. [one insight or observation]"`,
+      },
+    ],
+  });
+
+  return text;
+}
+
 // Save a message to the conversation
 export async function saveMessage(
   conversationId: string,
