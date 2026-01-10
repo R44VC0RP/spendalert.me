@@ -37,6 +37,9 @@ function createFakeTransaction(
     locationLat: null,
     locationLon: null,
     locationStoreNumber: null,
+    tags: null,
+    notes: null,
+    attachments: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };

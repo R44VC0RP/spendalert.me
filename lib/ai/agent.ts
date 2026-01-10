@@ -48,8 +48,18 @@ available tools (use sparingly - context usually has what you need):
 - searchTransactions: search by keyword, date range, amount filters - use only if searching for something specific
 - getSpendingSummary: get spending breakdown by category or merchant
 - getTopMerchants: see top spending locations
+- tagTransaction: add tags to a transaction (e.g., "business", "vacation", "reimbursable") - great for tracking expenses
+- addTransactionNote: add a note to a transaction (e.g., "lunch with client", "birthday gift for mom")
+- attachImageToTransaction: attach a receipt or screenshot to a transaction
+- getTransactionsByTag: find all transactions with a specific tag
 - sendReaction: react to a message with love/like/laugh/etc - use this like you would in a normal text convo
 - noResponse: use this when you don't need to say anything (e.g., user just reacted to your message, or sent something that doesn't need a reply)
+
+tagging & notes:
+- if the user asks you to remember something about a transaction, tag it or add a note
+- if they send a receipt image, ask if they want to attach it to a recent transaction
+- common tags: "business", "personal", "reimbursable", "tax deductible", "vacation", "gift", "split"
+- you can search transactions first to find the right one, then tag/note it
 
 reacting to messages:
 - you can react to messages just like a human would
@@ -160,7 +170,18 @@ function buildSystemPrompt(recentTransactions: Transaction[]): string {
       for (const tx of txs) {
         const amount = parseFloat(tx.amount);
         const sign = amount > 0 ? "-" : "+";
-        prompt += `  ${sign}$${Math.abs(amount).toFixed(2)} ${tx.merchantName || tx.name}${tx.primaryCategory ? ` (${tx.primaryCategory})` : ""}${tx.pending ? " [pending]" : ""}\n`;
+        let line = `  ${sign}$${Math.abs(amount).toFixed(2)} ${tx.merchantName || tx.name}`;
+        if (tx.primaryCategory) line += ` (${tx.primaryCategory})`;
+        if (tx.pending) line += " [pending]";
+        if (tx.tags) {
+          try {
+            const tags = JSON.parse(tx.tags) as string[];
+            if (tags.length > 0) line += ` [tags: ${tags.join(", ")}]`;
+          } catch {}
+        }
+        if (tx.notes) line += ` [note: ${tx.notes}]`;
+        line += ` | id:${tx.id}`;
+        prompt += line + "\n";
       }
     }
   }
@@ -346,10 +367,14 @@ const transactionTools = {
         count: results.length,
         totalSpending: totalSpending.toFixed(2),
         transactions: results.map((tx) => ({
+          id: tx.id,
           date: tx.date,
           merchant: tx.merchantName || tx.name,
           amount: parseFloat(tx.amount).toFixed(2),
           category: tx.primaryCategory,
+          tags: tx.tags ? JSON.parse(tx.tags) : undefined,
+          note: tx.notes || undefined,
+          hasAttachments: !!tx.attachments,
         })),
       };
     },
@@ -458,6 +483,185 @@ const transactionTools = {
           visits: data.count,
           lastVisit: data.lastVisit,
         })),
+      };
+    },
+  }),
+
+  tagTransaction: tool({
+    description: "Add or update tags on a transaction. Tags help categorize transactions for tracking purposes (e.g., 'business expense', 'vacation', 'reimbursable', 'gift'). You can find transactions first using searchTransactions, then tag them.",
+    inputSchema: z.object({
+      transactionId: z.string().describe("The transaction ID to tag"),
+      tags: z.array(z.string()).describe("Array of tags to set on the transaction (replaces existing tags)"),
+    }),
+    execute: async ({ transactionId, tags }) => {
+      // Verify transaction exists
+      const tx = await db.query.transactions.findFirst({
+        where: eq(transactions.id, transactionId),
+      });
+
+      if (!tx) {
+        return { success: false, error: "Transaction not found" };
+      }
+
+      // Update tags
+      await db
+        .update(transactions)
+        .set({ 
+          tags: JSON.stringify(tags),
+          updatedAt: new Date(),
+        })
+        .where(eq(transactions.id, transactionId));
+
+      return { 
+        success: true, 
+        transactionId,
+        merchant: tx.merchantName || tx.name,
+        amount: tx.amount,
+        date: tx.date,
+        tags,
+      };
+    },
+  }),
+
+  addTransactionNote: tool({
+    description: "Add or update a note on a transaction. Notes are free-form text for recording context about a transaction (e.g., 'Lunch with client John', 'Birthday gift for mom', 'Split with roommate').",
+    inputSchema: z.object({
+      transactionId: z.string().describe("The transaction ID to add a note to"),
+      note: z.string().describe("The note text to save"),
+    }),
+    execute: async ({ transactionId, note }) => {
+      // Verify transaction exists
+      const tx = await db.query.transactions.findFirst({
+        where: eq(transactions.id, transactionId),
+      });
+
+      if (!tx) {
+        return { success: false, error: "Transaction not found" };
+      }
+
+      // Update note
+      await db
+        .update(transactions)
+        .set({ 
+          notes: note,
+          updatedAt: new Date(),
+        })
+        .where(eq(transactions.id, transactionId));
+
+      return { 
+        success: true, 
+        transactionId,
+        merchant: tx.merchantName || tx.name,
+        amount: tx.amount,
+        date: tx.date,
+        note,
+      };
+    },
+  }),
+
+  getTransactionsByTag: tool({
+    description: "Find all transactions with a specific tag.",
+    inputSchema: z.object({
+      tag: z.string().describe("The tag to search for"),
+      days: z.number().optional().describe("Number of days to look back. Defaults to 90."),
+    }),
+    execute: async ({ tag, days }) => {
+      const startDate = getDateDaysAgo(days || 90);
+
+      // Get all transactions with tags in the date range
+      const results = await db
+        .select()
+        .from(transactions)
+        .where(
+          and(
+            gte(transactions.date, startDate),
+            sql`${transactions.tags} IS NOT NULL`
+          )
+        )
+        .orderBy(desc(transactions.date));
+
+      // Filter by tag (need to parse JSON and check)
+      const tagged = results.filter(tx => {
+        if (!tx.tags) return false;
+        try {
+          const txTags = JSON.parse(tx.tags) as string[];
+          return txTags.some(t => t.toLowerCase() === tag.toLowerCase());
+        } catch {
+          return false;
+        }
+      });
+
+      const totalSpending = tagged
+        .filter(tx => parseFloat(tx.amount) > 0)
+        .reduce((sum, tx) => sum + parseFloat(tx.amount), 0);
+
+      return {
+        tag,
+        count: tagged.length,
+        totalSpending: totalSpending.toFixed(2),
+        transactions: tagged.map(tx => ({
+          id: tx.id,
+          date: tx.date,
+          merchant: tx.merchantName || tx.name,
+          amount: parseFloat(tx.amount).toFixed(2),
+          tags: tx.tags ? JSON.parse(tx.tags) : [],
+          note: tx.notes,
+        })),
+      };
+    },
+  }),
+
+  attachImageToTransaction: tool({
+    description: "Attach an image (receipt, screenshot, etc.) to a transaction. Use this when the user sends you an image and wants to associate it with a specific transaction. You can attach multiple images by calling this multiple times.",
+    inputSchema: z.object({
+      transactionId: z.string().describe("The transaction ID to attach the image to"),
+      imageUrl: z.string().describe("The URL of the image to attach"),
+      description: z.string().optional().describe("Optional description of what the image is (e.g., 'receipt', 'order confirmation')"),
+    }),
+    execute: async ({ transactionId, imageUrl, description }) => {
+      // Verify transaction exists
+      const tx = await db.query.transactions.findFirst({
+        where: eq(transactions.id, transactionId),
+      });
+
+      if (!tx) {
+        return { success: false, error: "Transaction not found" };
+      }
+
+      // Get existing attachments or start fresh
+      let attachments: Array<{ url: string; description?: string; addedAt: string }> = [];
+      if (tx.attachments) {
+        try {
+          attachments = JSON.parse(tx.attachments);
+        } catch {
+          attachments = [];
+        }
+      }
+
+      // Add new attachment
+      attachments.push({
+        url: imageUrl,
+        description,
+        addedAt: new Date().toISOString(),
+      });
+
+      // Update transaction
+      await db
+        .update(transactions)
+        .set({ 
+          attachments: JSON.stringify(attachments),
+          updatedAt: new Date(),
+        })
+        .where(eq(transactions.id, transactionId));
+
+      return { 
+        success: true, 
+        transactionId,
+        merchant: tx.merchantName || tx.name,
+        amount: tx.amount,
+        date: tx.date,
+        attachmentCount: attachments.length,
+        latestAttachment: { url: imageUrl, description },
       };
     },
   }),

@@ -165,6 +165,10 @@ export const transactions = pgTable(
     locationLat: numeric("location_lat"),
     locationLon: numeric("location_lon"),
     locationStoreNumber: text("location_store_number"),
+    // User-added metadata
+    tags: text("tags"), // JSON array of user-defined tags
+    notes: text("notes"), // User notes about the transaction
+    attachments: text("attachments"), // JSON array of image URLs (receipts, screenshots, etc.)
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
