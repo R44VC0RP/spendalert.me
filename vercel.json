@@ -6,11 +6,11 @@
     },
     {
       "path": "/api/cron/midweek-summary",
-      "schedule": "0 19 * * 3"
+      "schedule": "0 23 * * 3"
     },
     {
       "path": "/api/cron/weekly-summary",
-      "schedule": "0 19 * * 0"
+      "schedule": "0 23 * * 0"
     }
   ]
 }
