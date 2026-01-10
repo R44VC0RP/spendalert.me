@@ -35,6 +35,19 @@ when alerting about new transactions:
 - if it's their 3rd+ visit somewhere this week or they're spending a lot in one category, then add a short note like "3rd coffee this week, $18 total"
 - don't say things like "just saw" or "hit your account" - just the emoji, amount, and place
 
+categorizing transactions:
+- when you see a transaction, decide if you understand what it is
+- if you recognize it (clear merchant name, known category like food/gas/shopping), tag it with an appropriate category before sending the alert
+- use the tagTransaction tool to add tags like "food", "coffee", "gas", "groceries", "entertainment", "shopping", "subscription", etc
+- do this silently - don't mention that you're tagging it
+- if the merchant name is cryptic, vague, or you genuinely don't know what it is (random letters, POS DEBIT, unclear abbreviations), ask the user
+- vary how you ask - don't use the same phrasing every time. examples of asking:
+  - "$34.23 from VELOMIX, what is this?"
+  - "$12.50 at XYZ CORP - what was that for?"
+  - "got a $67.00 charge from MTNVIEW LLC, do you know what that is?"
+  - "$25.00 from STRIPE* something - ring a bell?"
+- when they reply and explain what it was, tag it appropriately and react with 👍 or just say something brief like "got it" or "ah cool"
+
 when answering questions:
 - you already have recent transactions in context below - use that first before calling tools
 - only use tools if you need to search for something specific not in context
@@ -1054,12 +1067,17 @@ export async function generateSingleTransactionAlert(
   const totalSpent = merchantTxs.reduce((sum, t) => sum + parseFloat(t.amount), 0);
 
   const txDetails = {
+    transactionId: tx.id,
     merchant,
     amount: amount.toFixed(2),
     category: tx.primaryCategory,
+    detailedCategory: tx.detailedCategory,
     thisMonthVisits: visitCount,
     thisMonthTotal: totalSpent.toFixed(2),
   };
+
+  // Check if the merchant name looks cryptic/unknown
+  const isCrypticMerchant = detectCrypticMerchant(merchant, tx.primaryCategory);
 
   // Get recent transactions for context
   const thirtyDaysAgoForContext = new Date();
@@ -1075,31 +1093,94 @@ export async function generateSingleTransactionAlert(
   
   const systemPrompt = buildSystemPrompt(recentTxsForContext);
 
+  // Create a minimal tool state for the tagTransaction tool
+  const state: ToolState = { noResponseCalled: false, didReact: false };
+  const tools = createTools(state);
+
   const { text } = await generateText({
     model: anthropic("claude-opus-4-5"),
     system: systemPrompt,
+    tools: {
+      tagTransaction: tools.tagTransaction,
+    },
     messages: [
       {
         role: "user",
-        content: `new charge: $${txDetails.amount} at ${txDetails.merchant}
-category: ${txDetails.category || "unknown"}
+        content: `new transaction to alert on:
+- transaction id: ${txDetails.transactionId}
+- amount: $${txDetails.amount}
+- merchant: ${txDetails.merchant}
+- plaid category: ${txDetails.category || "unknown"}
+- detailed category: ${txDetails.detailedCategory || "unknown"}
+- this month stats for this merchant: ${txDetails.thisMonthVisits} visits, $${txDetails.thisMonthTotal} total
+- merchant name appears cryptic: ${isCrypticMerchant ? "YES" : "no"}
 
-this month's stats for ${txDetails.merchant}: ${txDetails.thisMonthVisits} visits, $${txDetails.thisMonthTotal} total
+your job:
+1. first, decide: do you understand what this transaction is for?
+   - if YES (clear merchant like "starbucks", "amazon", "shell", or recognizable category): tag it with an appropriate category tag (food, coffee, gas, groceries, shopping, entertainment, subscription, etc) using the tagTransaction tool, then send a normal alert
+   - if NO (cryptic merchant name, vague category, random abbreviations): ask the user what it is
 
-generate a transaction alert. format: [emoji] $amount at merchant
+2. for known transactions:
+   - use tagTransaction to add a category tag (silently, don't mention it)
+   - then respond with: [emoji] $amount at merchant
+   - example: "☕ $5.52 at foxtail coffee"
+   - only add extra text if notable pattern (3+ visits this week or $50+ total this month)
 
-rules:
-- pick ONE emoji that fits the category (☕ coffee, 🍕 food, ⛽ gas, 🛒 groceries, 🛍️ shopping, 💊 pharmacy, 🎬 entertainment, ✈️ travel, etc)
-- keep it SHORT: just emoji + amount + merchant name
-- example: "☕ $5.52 at foxtail coffee"
-- ONLY add extra text if there's a notable pattern (3+ visits this week OR $50+ total this month at this place)
-- if adding pattern note, keep it brief: "☕ $5.52 at foxtail coffee - 3rd this week, $18 total"
-- no fluff like "just saw" or "heads up" - just the transaction`,
+3. for unknown/cryptic transactions:
+   - DON'T tag it yet (wait for user to explain)
+   - ask what it is in a casual, varied way. examples:
+     - "$34.23 from VELOMIX, what is this?"
+     - "$12.50 at XYZ CORP - what was that for?"
+     - "got a $67.00 charge from MTNVIEW LLC, do you know what that is?"
+   - keep it short and natural`,
       },
     ],
+    stopWhen: stepCountIs(2), // Allow one tool call + final response
   });
 
   return text;
+}
+
+// Detect if a merchant name looks cryptic/unknown
+function detectCrypticMerchant(merchantName: string, category: string | null): boolean {
+  const name = merchantName.toUpperCase();
+  
+  // Patterns that suggest a cryptic/unclear merchant
+  const crypticPatterns = [
+    /^POS\s/,           // POS DEBIT, POS PURCHASE
+    /^CHECKCARD\s/,     // CHECKCARD transactions
+    /^DEBIT\s/,         // Generic debit
+    /^ACH\s/,           // ACH transfers
+    /^PURCHASE\s/,      // Generic purchase
+    /^SQ\s?\*/,         // Square transactions (SQ *SOMETHING)
+    /^TST\s?\*/,        // Toast transactions (TST* or TST *)
+    /^STRIPE\s?\*/,     // Stripe transactions
+    /^PP\s?\*/,         // PayPal transactions
+    /^PAYPAL\s?\*/,     // PayPal
+    /^VENMO\s/,         // Venmo (often unclear what for)
+    /^ZELLE\s/,         // Zelle transfers
+    /^CKE\s/,           // Check card
+    /^[A-Z]{2,4}\d{5,}/, // Random letter+number combos
+    /^\d{5,}/,          // Starts with lots of numbers
+    /^[A-Z]{10,}$/,     // Very long single word with no spaces
+  ];
+  
+  // Check if name matches cryptic patterns
+  for (const pattern of crypticPatterns) {
+    if (pattern.test(name)) {
+      return true;
+    }
+  }
+  
+  // If category is null, OTHER, or very generic, lean toward cryptic
+  if (!category || category === "OTHER" || category === "GENERAL_SERVICES") {
+    // But only if the name also looks weird (short, all caps abbreviation, etc)
+    if (name.length <= 6 && !/\s/.test(name)) {
+      return true; // Short single word, no spaces - probably cryptic
+    }
+  }
+  
+  return false;
 }
 
 // Generate a spending summary (midweek or end-of-week)
