@@ -22,6 +22,12 @@ interface Account {
   displayName: string;
 }
 
+interface TransactionAttachment {
+  url: string;
+  description?: string;
+  addedAt: string;
+}
+
 interface Transaction {
   id: string;
   accountId: string;
@@ -44,6 +50,11 @@ interface Transaction {
     postalCode: string | null;
     country: string | null;
   } | null;
+  // User-added metadata
+  tags: string[];
+  notes: string | null;
+  attachments: TransactionAttachment[];
+  // Account info
   accountName: string | null;
   accountMask: string | null;
   accountType: string | null;
@@ -408,36 +419,74 @@ export default function DashboardPage() {
             {!isLoading && transactions.length > 0 && (
               <table className="w-full text-sm font-medium tracking-normal">
                 <tbody>
-                  {transactions.map((tx) => (
-                    <tr
-                      key={tx.id}
-                      className={`border-b border-dashed border-border ${
-                        tx.pending ? "text-muted-foreground" : ""
-                      }`}
-                    >
-                      <td className="w-20 py-4 text-muted-foreground align-top">
-                        {formatDate(tx.date)}
-                      </td>
-                      <td className="py-4">
-                        <div className={tx.pending ? "italic" : ""}>
-                          {tx.merchantName || tx.name}
-                          {tx.pending && (
-                            <span className="ml-2 text-xs text-muted-foreground">
-                              (Pending)
-                            </span>
+                    {transactions.map((tx) => (
+                      <tr
+                        key={tx.id}
+                        className={`border-b border-dashed border-border ${
+                          tx.pending ? "text-muted-foreground" : ""
+                        }`}
+                      >
+                        <td className="w-20 py-4 text-muted-foreground align-top">
+                          {formatDate(tx.date)}
+                        </td>
+                        <td className="py-4">
+                          <div className={tx.pending ? "italic" : ""}>
+                            {tx.merchantName || tx.name}
+                            {tx.pending && (
+                              <span className="ml-2 text-xs text-muted-foreground">
+                                (Pending)
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-0.5 text-xs text-muted-foreground">
+                            {tx.accountDisplayName}
+                          </div>
+                          {/* Tags */}
+                          {tx.tags.length > 0 && (
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {tx.tags.map((tag) => (
+                                <span
+                                  key={tag}
+                                  className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground"
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
                           )}
-                        </div>
-                        <div className="mt-0.5 text-xs text-muted-foreground">
-                          {tx.accountDisplayName}
-                        </div>
-                      </td>
-                      <td className="py-4 text-right tabular-nums align-top">
-                        {/* Plaid: positive = outflow (spending), negative = inflow (income) */}
-                        {tx.amount > 0 ? "-" : ""}
-                        {formatCurrency(tx.amount)}
-                      </td>
-                    </tr>
-                  ))}
+                          {/* Notes */}
+                          {tx.notes && (
+                            <div className="mt-1.5 text-xs italic text-muted-foreground">
+                              &ldquo;{tx.notes}&rdquo;
+                            </div>
+                          )}
+                          {/* Attachments */}
+                          {tx.attachments.length > 0 && (
+                            <div className="mt-1.5 flex flex-wrap gap-2">
+                              {tx.attachments.map((attachment, idx) => (
+                                <a
+                                  key={idx}
+                                  href={attachment.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:border-foreground hover:text-foreground transition-colors"
+                                >
+                                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                                  </svg>
+                                  {attachment.description || "Attachment"}
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-4 text-right tabular-nums align-top">
+                          {/* Plaid: positive = outflow (spending), negative = inflow (income) */}
+                          {tx.amount > 0 ? "-" : ""}
+                          {formatCurrency(tx.amount)}
+                        </td>
+                      </tr>
+                    ))}
 
                   {/* Summary Row */}
                   {summary && (

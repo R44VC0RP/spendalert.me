@@ -73,6 +73,10 @@ export async function GET(request: NextRequest) {
         locationRegion: transactions.locationRegion,
         locationPostalCode: transactions.locationPostalCode,
         locationCountry: transactions.locationCountry,
+        // User-added metadata
+        tags: transactions.tags,
+        notes: transactions.notes,
+        attachments: transactions.attachments,
         // Account info
         accountName: plaidAccounts.name,
         accountMask: plaidAccounts.mask,
@@ -102,40 +106,57 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      transactions: txs.map((tx) => ({
-        id: tx.id,
-        accountId: tx.accountId,
-        amount: parseFloat(tx.amount),
-        date: tx.date,
-        datetime: tx.datetime,
-        name: tx.name,
-        merchantName: tx.merchantName,
-        logoUrl: tx.logoUrl,
-        website: tx.website,
-        paymentChannel: tx.paymentChannel,
-        primaryCategory: tx.primaryCategory,
-        detailedCategory: tx.detailedCategory,
-        categoryIconUrl: tx.categoryIconUrl,
-        pending: tx.pending,
-        location: tx.locationCity
-          ? {
-              address: tx.locationAddress,
-              city: tx.locationCity,
-              region: tx.locationRegion,
-              postalCode: tx.locationPostalCode,
-              country: tx.locationCountry,
-            }
-          : null,
-        // Account display info
-        accountName: tx.accountName,
-        accountMask: tx.accountMask,
-        accountType: tx.accountType,
-        accountSubtype: tx.accountSubtype,
-        institutionName: tx.institutionName,
-        accountDisplayName: tx.institutionName
-          ? `${tx.institutionName}${tx.accountMask ? ` ...${tx.accountMask}` : ""}`
-          : tx.accountName || "Unknown Account",
-      })),
+      transactions: txs.map((tx) => {
+        // Parse JSON fields
+        let tags: string[] = [];
+        let attachments: Array<{ url: string; description?: string; addedAt: string }> = [];
+        
+        if (tx.tags) {
+          try { tags = JSON.parse(tx.tags); } catch {}
+        }
+        if (tx.attachments) {
+          try { attachments = JSON.parse(tx.attachments); } catch {}
+        }
+
+        return {
+          id: tx.id,
+          accountId: tx.accountId,
+          amount: parseFloat(tx.amount),
+          date: tx.date,
+          datetime: tx.datetime,
+          name: tx.name,
+          merchantName: tx.merchantName,
+          logoUrl: tx.logoUrl,
+          website: tx.website,
+          paymentChannel: tx.paymentChannel,
+          primaryCategory: tx.primaryCategory,
+          detailedCategory: tx.detailedCategory,
+          categoryIconUrl: tx.categoryIconUrl,
+          pending: tx.pending,
+          location: tx.locationCity
+            ? {
+                address: tx.locationAddress,
+                city: tx.locationCity,
+                region: tx.locationRegion,
+                postalCode: tx.locationPostalCode,
+                country: tx.locationCountry,
+              }
+            : null,
+          // User-added metadata
+          tags,
+          notes: tx.notes,
+          attachments,
+          // Account display info
+          accountName: tx.accountName,
+          accountMask: tx.accountMask,
+          accountType: tx.accountType,
+          accountSubtype: tx.accountSubtype,
+          institutionName: tx.institutionName,
+          accountDisplayName: tx.institutionName
+            ? `${tx.institutionName}${tx.accountMask ? ` ...${tx.accountMask}` : ""}`
+            : tx.accountName || "Unknown Account",
+        };
+      }),
       summary: {
         totalSpending,
         totalIncome,
