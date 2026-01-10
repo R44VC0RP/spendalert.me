@@ -6,8 +6,8 @@ import { eq } from "drizzle-orm";
 // Platinum card mask to refresh
 const PLATINUM_MASK = "1002";
 
-// Max random delay in minutes (0-55 to stay within the hour)
-const MAX_DELAY_MINUTES = 55;
+// Max random delay in minutes (0-15 to stay within the 30-min window)
+const MAX_DELAY_MINUTES = 15;
 
 /**
  * Workflow to refresh Plaid transactions with a random delay.
