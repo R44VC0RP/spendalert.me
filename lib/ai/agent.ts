@@ -5,6 +5,7 @@ import { db, transactions, aiMessages, aiConversations } from "@/lib/db";
 import { eq, desc, and, gte, lte, gt, lt, like, or, sql } from "drizzle-orm";
 import type { Transaction, AiMessage } from "@/lib/db/schema";
 import { sendReaction as loopSendReaction } from "@/lib/loop";
+import { searchWeb, searchNews, askQuestion } from "@/lib/exa";
 
 // Create Anthropic client pointing to OpenCode Zen
 const anthropic = createAnthropic({
@@ -52,8 +53,16 @@ available tools (use sparingly - context usually has what you need):
 - addTransactionNote: add a note to a transaction (e.g., "lunch with client", "birthday gift for mom")
 - attachImageToTransaction: attach a receipt or screenshot to a transaction
 - getTransactionsByTag: find all transactions with a specific tag
+- searchWeb: search the internet for information (companies, products, general knowledge)
+- searchNews: search recent news articles
+- askQuestion: get a direct answer to a factual question with sources
 - sendReaction: react to a message with love/like/laugh/etc - use this like you would in a normal text convo
 - noResponse: use this when you don't need to say anything (e.g., user just reacted to your message, or sent something that doesn't need a reply)
+
+web search:
+- use search tools when the user asks about something you don't know or need current info on
+- great for: "what is [company]?", "latest news about [topic]", "is [store] having a sale?"
+- if they ask about a merchant they spent money at, you can search to learn more about it
 
 tagging & notes:
 - if the user asks you to remember something about a transaction, tag it or add a note
@@ -663,6 +672,106 @@ const transactionTools = {
         attachmentCount: attachments.length,
         latestAttachment: { url: imageUrl, description },
       };
+    },
+  }),
+
+  // === Web Search Tools (powered by Exa) ===
+
+  searchWebTool: tool({
+    description: "Search the internet for information about companies, products, services, or general knowledge. Use this when you need to look up something you don't know or need current information about.",
+    inputSchema: z.object({
+      query: z.string().describe("The search query"),
+      numResults: z.number().optional().describe("Number of results to return (default 5)"),
+    }),
+    execute: async ({ query, numResults }) => {
+      try {
+        const results = await searchWeb({
+          query,
+          numResults: numResults || 5,
+          type: "auto",
+        });
+
+        return {
+          success: true,
+          query,
+          results: results.results.map(r => ({
+            title: r.title,
+            url: r.url,
+            summary: r.summary || r.text?.substring(0, 300),
+            publishedDate: r.publishedDate,
+          })),
+        };
+      } catch (error) {
+        console.error("Web search error:", error);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "Search failed",
+        };
+      }
+    },
+  }),
+
+  searchNewsTool: tool({
+    description: "Search for recent news articles about a topic. Great for finding current events, company news, or trending topics.",
+    inputSchema: z.object({
+      query: z.string().describe("The news search query"),
+      daysBack: z.number().optional().describe("How many days back to search (default 7)"),
+      numResults: z.number().optional().describe("Number of results to return (default 5)"),
+    }),
+    execute: async ({ query, daysBack, numResults }) => {
+      try {
+        const results = await searchNews(query, {
+          daysBack: daysBack || 7,
+          numResults: numResults || 5,
+        });
+
+        return {
+          success: true,
+          query,
+          daysBack: daysBack || 7,
+          results: results.results.map(r => ({
+            title: r.title,
+            url: r.url,
+            summary: r.summary || r.text?.substring(0, 300),
+            publishedDate: r.publishedDate,
+            author: r.author,
+          })),
+        };
+      } catch (error) {
+        console.error("News search error:", error);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "News search failed",
+        };
+      }
+    },
+  }),
+
+  askQuestionTool: tool({
+    description: "Get a direct, factual answer to a question with sources. Best for specific questions like 'What is X?', 'How much does Y cost?', 'When did Z happen?'",
+    inputSchema: z.object({
+      question: z.string().describe("The question to answer"),
+    }),
+    execute: async ({ question }) => {
+      try {
+        const result = await askQuestion({ query: question });
+
+        return {
+          success: true,
+          question,
+          answer: result.answer,
+          sources: result.citations.map(c => ({
+            title: c.title,
+            url: c.url,
+          })),
+        };
+      } catch (error) {
+        console.error("Ask question error:", error);
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "Failed to get answer",
+        };
+      }
     },
   }),
 };
