@@ -219,21 +219,24 @@ export const aiMessages = pgTable(
   ]
 );
 
-// Pending messages buffer for debouncing rapid messages
+// Pending messages queue - one row per inbound message for atomic claim pattern
 export const pendingMessages = pgTable(
   "pending_messages",
   {
     id: text("id").primaryKey(), // UUID
     phoneNumber: text("phone_number").notNull(),
-    messages: text("messages").notNull(), // JSON array of {text, messageId, timestamp}
-    processingAt: timestamp("processing_at"), // When processing should start (null = not scheduled)
-    processedAt: timestamp("processed_at"), // When processing completed (null = not processed)
+    loopMessageId: text("loop_message_id").notNull(), // Loop's message_id
+    text: text("text"), // Message text (can be null for image-only)
+    imageUrls: text("image_urls"), // JSON array of image URLs
+    isReaction: boolean("is_reaction").default(false).notNull(),
+    reactionType: text("reaction_type"), // love, like, laugh, etc.
+    processedAt: timestamp("processed_at"), // When claimed/processed (null = pending)
     createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => [
     index("pending_messages_phone_idx").on(table.phoneNumber),
-    index("pending_messages_processing_idx").on(table.processingAt),
+    index("pending_messages_processed_idx").on(table.processedAt),
+    index("pending_messages_created_idx").on(table.createdAt),
   ]
 );
 

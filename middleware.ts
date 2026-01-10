@@ -21,5 +21,7 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
+  // Only run middleware on these paths
+  // Note: .well-known/workflow/* is NOT matched, so Vercel Workflows work correctly
   matcher: ["/dashboard/:path*", "/login"],
 };
