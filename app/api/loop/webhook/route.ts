@@ -314,6 +314,7 @@ async function processClaimedMessages(
   // Generate AI response
   const aiResponse = await generateResponse({
     conversationId,
+    phoneNumber,
     userMessage: combinedText,
     imageUrls: allImageUrls.length > 0 ? allImageUrls : undefined,
     inboundMessageId: lastMessageId,

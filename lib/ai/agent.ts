@@ -1,11 +1,13 @@
 import { generateText, tool, stepCountIs } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { withSupermemory, supermemoryTools } from "@supermemory/tools/ai-sdk";
 import { z } from "zod";
 import { db, transactions, aiMessages, aiConversations } from "@/lib/db";
 import { eq, desc, and, gte, lte, gt, lt, like, or, sql } from "drizzle-orm";
 import type { Transaction, AiMessage } from "@/lib/db/schema";
 import { sendReaction as loopSendReaction } from "@/lib/loop";
 import { searchWeb, searchNews, askQuestion } from "@/lib/exa";
+import { getContainerTag, getSupermemoryApiKey } from "@/lib/supermemory";
 
 // Create Anthropic client pointing to OpenCode Zen
 const anthropic = createAnthropic({
@@ -80,7 +82,16 @@ reacting to messages:
 images:
 - users can send you screenshots or images
 - if they send an image, describe what you see and help them with whatever they're asking about
-- if it's a screenshot of a transaction or receipt, help them understand it`;
+- if it's a screenshot of a transaction or receipt, help them understand it
+
+memory & personalization:
+- you have long-term memory about this user - their profile info is automatically available to you
+- memories include things they've told you: budgets, preferences, goals, personal info
+- if the user tells you something important (budget, preference, goal, name, etc), it gets automatically saved
+- you can also explicitly save a memory using addMemory tool for important things
+- use searchMemories tool to recall specific past conversations or find relevant memories
+- example things to remember: "my eating out budget is $400/month", "i want to cut back on coffee", "my name is Ryan"
+- use their memories to personalize responses - if you know their budget, mention when they're close to it`;
 
 // Get current date/time in EST
 function getCurrentDateTimeEST(): { date: string; time: string; dayOfWeek: string } {
@@ -851,6 +862,7 @@ function createTools(
 // Input options for generateResponse
 export interface GenerateResponseOptions {
   conversationId: string;
+  phoneNumber: string;
   userMessage: string;
   imageUrls?: string[];
   inboundMessageId?: string;
@@ -866,6 +878,7 @@ export async function generateResponse(
 ): Promise<AgentResponse> {
   const {
     conversationId,
+    phoneNumber,
     userMessage,
     imageUrls,
     inboundMessageId,
@@ -877,10 +890,15 @@ export async function generateResponse(
 
   console.log(`[Agent] ========== GENERATING RESPONSE ==========`);
   console.log(`[Agent] Conversation ID: ${conversationId}`);
+  console.log(`[Agent] Phone number: ${phoneNumber}`);
   console.log(`[Agent] User message: "${userMessage}"`);
   console.log(`[Agent] Images: ${imageUrls?.length || 0}`);
   console.log(`[Agent] Is reaction: ${isReaction}, type: ${reactionType}`);
   console.log(`[Agent] Inbound message ID: ${inboundMessageId}`);
+  
+  // Get Supermemory container tag for this user
+  const containerTag = getContainerTag(phoneNumber);
+  console.log(`[Agent] Supermemory container tag: ${containerTag}`);
   
   const context = await loadConversationContext(conversationId);
 
@@ -923,16 +941,34 @@ export async function generateResponse(
   const systemPrompt = buildSystemPrompt(context.recentTransactions);
   
   console.log(`[Agent] System prompt length: ${systemPrompt.length} chars`);
-  console.log(`[Agent] Available tools: searchTransactions, getSpendingSummary, getTopMerchants, sendMessage, sendReaction, noResponse`);
-  console.log(`[Agent] Calling Claude Sonnet 4.5 via OpenCode Zen...`);
+  console.log(`[Agent] Available tools: searchTransactions, getSpendingSummary, getTopMerchants, sendMessage, sendReaction, noResponse, searchMemories, addMemory`);
+  console.log(`[Agent] Calling Claude Opus 4.5 via OpenCode Zen with Supermemory...`);
 
   // Create state tracker and tools
   const state: ToolState = { noResponseCalled: false, didReact: false };
-  const tools = createTools(state, sendMessageFn, sendReactionFn, inboundMessageId);
+  const baseTools = createTools(state, sendMessageFn, sendReactionFn, inboundMessageId);
+  
+  // Add Supermemory tools for explicit memory operations
+  const supermemoryApiKey = getSupermemoryApiKey();
+  const memoryTools = supermemoryTools(supermemoryApiKey, { containerTags: [containerTag] });
+  const tools = {
+    ...baseTools,
+    // Cast to any to avoid TypeScript version mismatch between supermemory and ai SDK
+    searchMemories: memoryTools.searchMemories as any,
+    addMemory: memoryTools.addMemory as any,
+  };
+
+  // Wrap the model with Supermemory for automatic profile injection and memory saving
+  const baseModel = anthropic("claude-opus-4-5");
+  const modelWithMemory = withSupermemory(baseModel, containerTag, {
+    apiKey: supermemoryApiKey,
+    mode: "full", // Use both profile and query-based memory search
+    addMemory: "always", // Automatically save memories from conversations
+  });
 
   const startTime = Date.now();
   const { text, steps, toolCalls, toolResults } = await generateText({
-    model: anthropic("claude-opus-4-5"),
+    model: modelWithMemory,
     system: systemPrompt,
     messages: messagesForAI,
     tools,
