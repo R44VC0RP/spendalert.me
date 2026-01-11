@@ -211,12 +211,12 @@ export async function exchangeCodeForTokens(
   code: string
 ): Promise<WhoopTokenResponse> {
   const clientId = process.env.WHOOP_CLIENT_ID;
-  const clientSecret = process.env.WHOOP_SECRET;
+  const clientSecret = process.env.WHOOP_CLIENT_SECRET || process.env.WHOOP_SECRET;
   const redirectUri = process.env.WHOOP_REDIRECT_URI;
 
   if (!clientId || !clientSecret || !redirectUri) {
     throw new Error(
-      "WHOOP_CLIENT_ID, WHOOP_SECRET, and WHOOP_REDIRECT_URI must be set"
+      "WHOOP_CLIENT_ID, WHOOP_CLIENT_SECRET, and WHOOP_REDIRECT_URI must be set"
     );
   }
 
@@ -249,10 +249,10 @@ export async function refreshAccessToken(
   refreshToken: string
 ): Promise<WhoopTokenResponse> {
   const clientId = process.env.WHOOP_CLIENT_ID;
-  const clientSecret = process.env.WHOOP_SECRET;
+  const clientSecret = process.env.WHOOP_CLIENT_SECRET || process.env.WHOOP_SECRET;
 
   if (!clientId || !clientSecret) {
-    throw new Error("WHOOP_CLIENT_ID and WHOOP_SECRET must be set");
+    throw new Error("WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET must be set");
   }
 
   const response = await fetch(WHOOP_TOKEN_URL, {
