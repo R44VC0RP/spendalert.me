@@ -2,9 +2,10 @@ import { generateText, tool, stepCountIs } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { withSupermemory, supermemoryTools } from "@supermemory/tools/ai-sdk";
 import { z } from "zod";
-import { db, transactions, aiMessages, aiConversations } from "@/lib/db";
+import { db, transactions, aiMessages, aiConversations, whoopTokens, whoopSleep, whoopRecovery } from "@/lib/db";
 import { eq, desc, and, gte, lte, gt, lt, like, or, sql } from "drizzle-orm";
 import type { Transaction, AiMessage } from "@/lib/db/schema";
+import { WhoopClient, refreshAccessToken, formatDuration } from "@/lib/whoop";
 import { sendReaction as loopSendReaction } from "@/lib/loop";
 import { searchWeb, searchNews, askQuestion } from "@/lib/exa";
 import { getContainerTag, getSupermemoryApiKey } from "@/lib/supermemory";
@@ -73,6 +74,16 @@ available tools (use sparingly - context usually has what you need):
 - askQuestion: get a direct answer to a factual question with sources
 - sendReaction: react to a message with love/like/laugh/etc - use this like you would in a normal text convo
 - noResponse: use this when you don't need to say anything (e.g., user just reacted to your message, or sent something that doesn't need a reply)
+
+whoop integration:
+- the user may have connected their WHOOP fitness tracker
+- you can check their sleep, recovery, and workout data
+- use getWhoopStatus to see if they're connected and get their latest metrics
+- use getWhoopSleepHistory to see their sleep patterns
+- use getWhoopRecoveryHistory to see recovery trends
+- combine health data with spending insights when relevant (e.g., "you've been sleeping poorly and spending more on coffee lately")
+- if they ask about their health metrics, HRV, recovery, sleep, etc - use these tools
+- available whoop tools: getWhoopStatus, getWhoopSleepHistory, getWhoopRecoveryHistory
 
 web search:
 - use search tools when the user asks about something you don't know or need current info on
@@ -795,6 +806,222 @@ const transactionTools = {
           success: false,
           error: error instanceof Error ? error.message : "Failed to get answer",
         };
+      }
+    },
+  }),
+
+  // === WHOOP Health Tools ===
+
+  getWhoopStatus: tool({
+    description: "Check if WHOOP is connected and get the latest health metrics including recovery score, HRV, resting heart rate, and last sleep data. Use this to answer questions about health, sleep, recovery, or fitness.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        // Get the first WHOOP user (single-user app)
+        const tokens = await db.select().from(whoopTokens).limit(1);
+
+        if (tokens.length === 0) {
+          return {
+            connected: false,
+            message: "WHOOP is not connected. The user can connect at /api/whoop/authorize",
+          };
+        }
+
+        let token = tokens[0];
+
+        // Check if token needs refresh
+        if (new Date() >= token.expiresAt) {
+          try {
+            const newTokens = await refreshAccessToken(token.refreshToken);
+            const expiresAt = new Date(Date.now() + newTokens.expires_in * 1000);
+            await db.update(whoopTokens).set({
+              accessToken: newTokens.access_token,
+              refreshToken: newTokens.refresh_token,
+              expiresAt,
+              updatedAt: new Date(),
+            }).where(eq(whoopTokens.id, token.id));
+            token = { ...token, accessToken: newTokens.access_token };
+          } catch {
+            return { connected: false, error: "Token expired and refresh failed" };
+          }
+        }
+
+        // Get latest sleep
+        const lastSleep = await db
+          .select()
+          .from(whoopSleep)
+          .where(eq(whoopSleep.whoopUserId, token.id))
+          .orderBy(desc(whoopSleep.start))
+          .limit(1);
+
+        // Get latest recovery
+        const lastRecovery = await db
+          .select()
+          .from(whoopRecovery)
+          .where(eq(whoopRecovery.whoopUserId, token.id))
+          .orderBy(desc(whoopRecovery.createdAt))
+          .limit(1);
+
+        const sleep = lastSleep[0];
+        const recovery = lastRecovery[0];
+
+        return {
+          connected: true,
+          lastSleep: sleep ? {
+            date: sleep.start,
+            totalSleep: formatDuration((sleep.totalInBedTime || 0) - (sleep.totalAwakeTime || 0)),
+            performance: sleep.sleepPerformance ? `${Math.round(parseFloat(sleep.sleepPerformance))}%` : null,
+            efficiency: sleep.sleepEfficiency ? `${Math.round(parseFloat(sleep.sleepEfficiency))}%` : null,
+            deepSleep: formatDuration(sleep.totalSlowWaveSleep || 0),
+            remSleep: formatDuration(sleep.totalRemSleep || 0),
+            disturbances: sleep.disturbanceCount,
+          } : null,
+          lastRecovery: recovery ? {
+            score: recovery.recoveryScore,
+            status: recovery.recoveryScore ? (recovery.recoveryScore >= 67 ? "green" : recovery.recoveryScore >= 34 ? "yellow" : "red") : null,
+            hrv: recovery.hrvRmssd ? `${Math.round(parseFloat(recovery.hrvRmssd))}ms` : null,
+            restingHeartRate: recovery.restingHeartRate ? `${recovery.restingHeartRate} bpm` : null,
+            spo2: recovery.spo2Percentage ? `${Math.round(parseFloat(recovery.spo2Percentage))}%` : null,
+          } : null,
+        };
+      } catch (error) {
+        console.error("WHOOP status error:", error);
+        return { connected: false, error: error instanceof Error ? error.message : "Failed to get WHOOP status" };
+      }
+    },
+  }),
+
+  getWhoopSleepHistory: tool({
+    description: "Get the user's sleep history from WHOOP over a time period. Shows sleep duration, performance, efficiency, and sleep stages.",
+    inputSchema: z.object({
+      days: z.number().optional().describe("Number of days of history to retrieve. Defaults to 7."),
+    }),
+    execute: async ({ days }) => {
+      try {
+        const tokens = await db.select().from(whoopTokens).limit(1);
+        if (tokens.length === 0) {
+          return { connected: false, message: "WHOOP is not connected" };
+        }
+
+        const lookbackDays = days || 7;
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - lookbackDays);
+
+        const sleepRecords = await db
+          .select()
+          .from(whoopSleep)
+          .where(
+            and(
+              eq(whoopSleep.whoopUserId, tokens[0].id),
+              gte(whoopSleep.start, startDate),
+              eq(whoopSleep.isNap, false)
+            )
+          )
+          .orderBy(desc(whoopSleep.start))
+          .limit(lookbackDays);
+
+        if (sleepRecords.length === 0) {
+          return { connected: true, message: "No sleep data found for this period", records: [] };
+        }
+
+        // Calculate averages
+        const totalPerformance = sleepRecords.reduce((sum, s) => sum + (s.sleepPerformance ? parseFloat(s.sleepPerformance) : 0), 0);
+        const totalSleepMs = sleepRecords.reduce((sum, s) => sum + ((s.totalInBedTime || 0) - (s.totalAwakeTime || 0)), 0);
+        const avgPerformance = totalPerformance / sleepRecords.length;
+        const avgSleepMs = totalSleepMs / sleepRecords.length;
+
+        return {
+          connected: true,
+          periodDays: lookbackDays,
+          recordCount: sleepRecords.length,
+          averages: {
+            sleepDuration: formatDuration(avgSleepMs),
+            performance: `${Math.round(avgPerformance)}%`,
+          },
+          records: sleepRecords.map(s => ({
+            date: s.start,
+            totalSleep: formatDuration((s.totalInBedTime || 0) - (s.totalAwakeTime || 0)),
+            performance: s.sleepPerformance ? `${Math.round(parseFloat(s.sleepPerformance))}%` : null,
+            deepSleep: formatDuration(s.totalSlowWaveSleep || 0),
+            remSleep: formatDuration(s.totalRemSleep || 0),
+            disturbances: s.disturbanceCount,
+          })),
+        };
+      } catch (error) {
+        console.error("WHOOP sleep history error:", error);
+        return { error: error instanceof Error ? error.message : "Failed to get sleep history" };
+      }
+    },
+  }),
+
+  getWhoopRecoveryHistory: tool({
+    description: "Get the user's recovery history from WHOOP over a time period. Shows recovery scores, HRV trends, and resting heart rate.",
+    inputSchema: z.object({
+      days: z.number().optional().describe("Number of days of history to retrieve. Defaults to 7."),
+    }),
+    execute: async ({ days }) => {
+      try {
+        const tokens = await db.select().from(whoopTokens).limit(1);
+        if (tokens.length === 0) {
+          return { connected: false, message: "WHOOP is not connected" };
+        }
+
+        const lookbackDays = days || 7;
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - lookbackDays);
+
+        const recoveryRecords = await db
+          .select()
+          .from(whoopRecovery)
+          .where(
+            and(
+              eq(whoopRecovery.whoopUserId, tokens[0].id),
+              gte(whoopRecovery.createdAt, startDate)
+            )
+          )
+          .orderBy(desc(whoopRecovery.createdAt))
+          .limit(lookbackDays);
+
+        if (recoveryRecords.length === 0) {
+          return { connected: true, message: "No recovery data found for this period", records: [] };
+        }
+
+        // Calculate averages
+        const scoredRecords = recoveryRecords.filter(r => r.recoveryScore !== null);
+        const avgScore = scoredRecords.reduce((sum, r) => sum + (r.recoveryScore || 0), 0) / scoredRecords.length;
+        const avgHrv = recoveryRecords.reduce((sum, r) => sum + (r.hrvRmssd ? parseFloat(r.hrvRmssd) : 0), 0) / recoveryRecords.length;
+        const avgRhr = recoveryRecords.reduce((sum, r) => sum + (r.restingHeartRate || 0), 0) / recoveryRecords.length;
+
+        // Count days in each zone
+        const greenDays = scoredRecords.filter(r => (r.recoveryScore || 0) >= 67).length;
+        const yellowDays = scoredRecords.filter(r => (r.recoveryScore || 0) >= 34 && (r.recoveryScore || 0) < 67).length;
+        const redDays = scoredRecords.filter(r => (r.recoveryScore || 0) < 34).length;
+
+        return {
+          connected: true,
+          periodDays: lookbackDays,
+          recordCount: recoveryRecords.length,
+          averages: {
+            recoveryScore: Math.round(avgScore),
+            hrv: `${Math.round(avgHrv)}ms`,
+            restingHeartRate: `${Math.round(avgRhr)} bpm`,
+          },
+          distribution: {
+            greenDays,
+            yellowDays,
+            redDays,
+          },
+          records: recoveryRecords.map(r => ({
+            date: r.createdAt,
+            score: r.recoveryScore,
+            status: r.recoveryScore ? (r.recoveryScore >= 67 ? "green" : r.recoveryScore >= 34 ? "yellow" : "red") : null,
+            hrv: r.hrvRmssd ? `${Math.round(parseFloat(r.hrvRmssd))}ms` : null,
+            restingHeartRate: r.restingHeartRate ? `${r.restingHeartRate} bpm` : null,
+          })),
+        };
+      } catch (error) {
+        console.error("WHOOP recovery history error:", error);
+        return { error: error instanceof Error ? error.message : "Failed to get recovery history" };
       }
     },
   }),
