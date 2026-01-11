@@ -213,3 +213,14 @@ The app uses Plaid's `SYNC_UPDATES_AVAILABLE` webhook for real-time transaction 
 1. Create in `components/` with kebab-case filename
 2. Add `"use client"` if using hooks/interactivity
 3. Use shadcn/ui primitives where possible
+
+## Text Messaging (sendMessage Tool)
+
+When sending text messages via the `sendMessage` tool (iMessage/SMS):
+
+- **DO NOT use markdown formatting** - it won't render and will appear as raw text
+- **DO NOT use code blocks, bold, italics, headers, or bullet points**
+- Write in plain, conversational text only
+- Keep messages concise and readable
+- Use line breaks sparingly for separation if needed
+- Format numbers and currency naturally (e.g., "$1,234.56" not `$1,234.56`)
