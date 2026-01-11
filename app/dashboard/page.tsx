@@ -70,6 +70,30 @@ interface TransactionSummary {
   transactionCount: number;
 }
 
+interface WhoopStatus {
+  connected: boolean;
+  user: {
+    id: number;
+    firstName: string;
+    lastName: string;
+    email: string;
+  } | null;
+  lastSleep: {
+    id: string;
+    start: string;
+    end: string;
+    performance: string | null;
+    efficiency: string | null;
+    totalSleepMs: number;
+  } | null;
+  lastRecovery: {
+    cycleId: number;
+    score: number | null;
+    hrv: string | null;
+    restingHr: number | null;
+  } | null;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const { data: session } = useSession();
@@ -83,6 +107,7 @@ export default function DashboardPage() {
   const [connectionMessage, setConnectionMessage] = useState<string | null>(null);
   const [showRefreshWarning, setShowRefreshWarning] = useState(false);
   const [isAddingPasskey, setIsAddingPasskey] = useState(false);
+  const [whoopStatus, setWhoopStatus] = useState<WhoopStatus | null>(null);
 
   const handleSignOut = async () => {
     await authClient.signOut();
@@ -108,6 +133,19 @@ export default function DashboardPage() {
       setIsAddingPasskey(false);
     }
   };
+
+  // Fetch WHOOP status
+  const fetchWhoopStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/whoop/status");
+      const data = await response.json();
+      if (!data.error) {
+        setWhoopStatus(data);
+      }
+    } catch (err) {
+      console.error("Error fetching WHOOP status:", err);
+    }
+  }, []);
 
   // Fetch accounts
   const fetchAccounts = useCallback(async () => {
@@ -159,7 +197,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchAccounts();
-  }, [fetchAccounts]);
+    fetchWhoopStatus();
+  }, [fetchAccounts, fetchWhoopStatus]);
 
   useEffect(() => {
     if (accounts.length > 0) {
@@ -210,6 +249,16 @@ export default function DashboardPage() {
       month: "short",
       year: "numeric",
     });
+  };
+
+  // Format milliseconds to human readable duration
+  const formatDuration = (ms: number) => {
+    const hours = Math.floor(ms / (1000 * 60 * 60));
+    const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${minutes}m`;
   };
 
   // Handle successful Plaid connection
@@ -396,6 +445,67 @@ export default function DashboardPage() {
                   onError={handlePlaidError}
                 />
               </div>
+            </div>
+
+            {/* WHOOP Integration */}
+            <div className="mb-8">
+              <div className="mb-4 flex items-baseline justify-between border-b border-dashed border-border pb-4">
+                <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+                  WHOOP
+                </span>
+                {whoopStatus?.connected && whoopStatus.lastRecovery?.score && (
+                  <span className={`text-xs font-bold ${
+                    whoopStatus.lastRecovery.score >= 67
+                      ? "text-green-600"
+                      : whoopStatus.lastRecovery.score >= 34
+                      ? "text-yellow-600"
+                      : "text-red-600"
+                  }`}>
+                    {whoopStatus.lastRecovery.score}% Recovery
+                  </span>
+                )}
+              </div>
+              {whoopStatus?.connected ? (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 text-green-600">
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium">
+                        {whoopStatus.user?.firstName || "WHOOP"} Connected
+                      </p>
+                      {whoopStatus.lastSleep && (
+                        <p className="text-xs text-muted-foreground">
+                          Last sleep: {formatDuration(whoopStatus.lastSleep.totalSleepMs)} ({whoopStatus.lastSleep.performance ? `${Math.round(parseFloat(whoopStatus.lastSleep.performance))}%` : "—"} performance)
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  {whoopStatus.lastRecovery && (
+                    <div className="text-right">
+                      <p className="text-xs text-muted-foreground">
+                        HRV: {whoopStatus.lastRecovery.hrv ? `${Math.round(parseFloat(whoopStatus.lastRecovery.hrv))}ms` : "—"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        RHR: {whoopStatus.lastRecovery.restingHr || "—"} bpm
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <a
+                  href="/api/whoop/authorize"
+                  className="inline-flex items-center gap-2 rounded border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:border-foreground hover:text-foreground"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                  </svg>
+                  Connect WHOOP
+                </a>
+              )}
             </div>
 
             {/* Account Statement Header */}
