@@ -251,3 +251,94 @@ export type AiMessage = typeof aiMessages.$inferSelect;
 export type NewAiMessage = typeof aiMessages.$inferInsert;
 export type PendingMessage = typeof pendingMessages.$inferSelect;
 export type NewPendingMessage = typeof pendingMessages.$inferInsert;
+
+// ==========================================
+// WHOOP Integration Tables
+// ==========================================
+
+// WHOOP OAuth tokens - stores access/refresh tokens per user
+export const whoopTokens = pgTable("whoop_tokens", {
+  id: text("id").primaryKey(), // WHOOP user_id
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  scopes: text("scopes").notNull(), // Space-separated scopes
+  // Link to our user (optional - for multi-user support)
+  userId: text("user_id").references(() => user.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// WHOOP sleep records - cache sleep data for analysis
+export const whoopSleep = pgTable(
+  "whoop_sleep",
+  {
+    id: text("id").primaryKey(), // WHOOP sleep UUID
+    whoopUserId: text("whoop_user_id")
+      .references(() => whoopTokens.id, { onDelete: "cascade" })
+      .notNull(),
+    cycleId: integer("cycle_id"),
+    start: timestamp("start").notNull(),
+    end: timestamp("end").notNull(),
+    timezoneOffset: text("timezone_offset"),
+    isNap: boolean("is_nap").default(false).notNull(),
+    scoreState: text("score_state"), // SCORED, PENDING_SCORE, etc.
+    // Sleep scores
+    sleepPerformance: numeric("sleep_performance"), // percentage
+    sleepConsistency: numeric("sleep_consistency"), // percentage
+    sleepEfficiency: numeric("sleep_efficiency"), // percentage
+    respiratoryRate: numeric("respiratory_rate"),
+    // Stage durations (milliseconds)
+    totalInBedTime: integer("total_in_bed_time"),
+    totalAwakeTime: integer("total_awake_time"),
+    totalLightSleep: integer("total_light_sleep"),
+    totalSlowWaveSleep: integer("total_slow_wave_sleep"),
+    totalRemSleep: integer("total_rem_sleep"),
+    sleepCycleCount: integer("sleep_cycle_count"),
+    disturbanceCount: integer("disturbance_count"),
+    // Sleep need (milliseconds)
+    sleepNeededBaseline: integer("sleep_needed_baseline"),
+    sleepNeededFromDebt: integer("sleep_needed_from_debt"),
+    sleepNeededFromStrain: integer("sleep_needed_from_strain"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("whoop_sleep_user_id_idx").on(table.whoopUserId),
+    index("whoop_sleep_start_idx").on(table.start),
+  ]
+);
+
+// WHOOP recovery records
+export const whoopRecovery = pgTable(
+  "whoop_recovery",
+  {
+    id: text("id").primaryKey(), // cycle_id as string
+    whoopUserId: text("whoop_user_id")
+      .references(() => whoopTokens.id, { onDelete: "cascade" })
+      .notNull(),
+    cycleId: integer("cycle_id").notNull(),
+    sleepId: text("sleep_id"),
+    scoreState: text("score_state"),
+    // Recovery scores
+    recoveryScore: integer("recovery_score"), // 0-100
+    restingHeartRate: integer("resting_heart_rate"),
+    hrvRmssd: numeric("hrv_rmssd"), // Heart rate variability
+    spo2Percentage: numeric("spo2_percentage"),
+    skinTempCelsius: numeric("skin_temp_celsius"),
+    userCalibrating: boolean("user_calibrating").default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("whoop_recovery_user_id_idx").on(table.whoopUserId),
+    index("whoop_recovery_cycle_id_idx").on(table.cycleId),
+  ]
+);
+
+// Types for WHOOP tables
+export type WhoopToken = typeof whoopTokens.$inferSelect;
+export type NewWhoopToken = typeof whoopTokens.$inferInsert;
+export type WhoopSleep = typeof whoopSleep.$inferSelect;
+export type NewWhoopSleep = typeof whoopSleep.$inferInsert;
+export type WhoopRecovery = typeof whoopRecovery.$inferSelect;
+export type NewWhoopRecovery = typeof whoopRecovery.$inferInsert;
