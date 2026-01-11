@@ -63,21 +63,30 @@ export async function transactionSyncWorkflow(itemId: string) {
   // Step 7: Update account balances
   await updateAccountBalances(item.accessToken);
 
-  // Step 8: Send alerts for new spending transactions
+  // Step 8: Send alerts for new spending transactions that haven't been alerted yet
+  // Filter to spending transactions that haven't been alerted
   const spendingTxs = addedTransactions.filter((tx) => parseFloat(tx.amount) > 0);
+  const unalertedTxs = spendingTxs.filter((tx) => !tx.alertedAt);
   
-  if (spendingTxs.length > 0) {
-    console.log(`[Workflow] Triggering alerts for ${spendingTxs.length} spending transactions`);
+  console.log(`[Workflow] Found ${spendingTxs.length} spending transactions, ${unalertedTxs.length} not yet alerted`);
+  
+  if (unalertedTxs.length > 0) {
+    console.log(`[Workflow] Triggering alerts for ${unalertedTxs.length} new spending transactions`);
     
     // Get conversation once for all alerts
     const conversationId = await getConversationForAlerts();
     
     // Send alert for each transaction
-    for (const tx of spendingTxs) {
-      await sendSingleTransactionAlert(tx, conversationId);
+    for (const tx of unalertedTxs) {
+      const alertSent = await sendSingleTransactionAlert(tx, conversationId);
+      
+      // Mark as alerted if we sent an alert
+      if (alertSent) {
+        await markTransactionAlerted(tx.id);
+      }
       
       // Small delay between alerts to avoid rate limiting
-      if (spendingTxs.length > 1) {
+      if (unalertedTxs.length > 1) {
         await sleep("1s");
       }
     }
@@ -135,6 +144,20 @@ async function upsertTransaction(tx: PlaidTransaction, itemId: string): Promise<
   const location = tx.location;
   const category = tx.personal_finance_category;
 
+  // Check if this is a posted transaction that replaces a pending one
+  // If so, inherit the alertedAt from the pending transaction to avoid duplicate alerts
+  let inheritedAlertedAt: Date | null = null;
+  if (tx.pending_transaction_id) {
+    const pendingTx = await db.query.transactions.findFirst({
+      where: eq(transactions.id, tx.pending_transaction_id),
+      columns: { alertedAt: true },
+    });
+    if (pendingTx?.alertedAt) {
+      inheritedAlertedAt = pendingTx.alertedAt;
+      console.log(`[Workflow] Inheriting alertedAt from pending tx ${tx.pending_transaction_id}`);
+    }
+  }
+
   const values = {
     id: tx.transaction_id,
     accountId: tx.account_id,
@@ -164,6 +187,7 @@ async function upsertTransaction(tx: PlaidTransaction, itemId: string): Promise<
     locationLat: location?.lat?.toString(),
     locationLon: location?.lon?.toString(),
     locationStoreNumber: location?.store_number,
+    alertedAt: inheritedAlertedAt,
   };
 
   await db
@@ -195,6 +219,7 @@ async function upsertTransaction(tx: PlaidTransaction, itemId: string): Promise<
         locationLon: location?.lon?.toString(),
         locationStoreNumber: location?.store_number,
         updatedAt: new Date(),
+        // Note: we don't update alertedAt on conflict - preserve existing value
       },
     });
 
@@ -252,7 +277,7 @@ async function getConversationForAlerts(): Promise<string> {
   return getOrCreateConversation(ALERT_RECIPIENT);
 }
 
-async function sendSingleTransactionAlert(tx: Transaction, conversationId: string): Promise<void> {
+async function sendSingleTransactionAlert(tx: Transaction, conversationId: string): Promise<boolean> {
   "use step";
   
   const merchant = tx.merchantName || tx.name;
@@ -265,7 +290,7 @@ async function sendSingleTransactionAlert(tx: Transaction, conversationId: strin
 
   if (!alertMessage) {
     console.log(`[Workflow] AI generated empty alert for ${merchant}, skipping`);
-    return;
+    return false;
   }
 
   // Send the alert via Loop/iMessage
@@ -278,4 +303,17 @@ async function sendSingleTransactionAlert(tx: Transaction, conversationId: strin
     messageId: sendResult.message_id,
     success: sendResult.success,
   });
+
+  return true;
+}
+
+async function markTransactionAlerted(transactionId: string): Promise<void> {
+  "use step";
+  
+  await db
+    .update(transactions)
+    .set({ alertedAt: new Date() })
+    .where(eq(transactions.id, transactionId));
+  
+  console.log(`[Workflow] Marked transaction ${transactionId} as alerted`);
 }

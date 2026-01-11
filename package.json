@@ -25,6 +25,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.1",
+    "inboundemail": "^0.20.0",
     "next": "16.0.8",
     "plaid": "^41.0.0",
     "radix-ui": "^1.4.3",

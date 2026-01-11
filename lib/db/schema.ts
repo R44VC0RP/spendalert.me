@@ -169,6 +169,8 @@ export const transactions = pgTable(
     tags: text("tags"), // JSON array of user-defined tags
     notes: text("notes"), // User notes about the transaction
     attachments: text("attachments"), // JSON array of image URLs (receipts, screenshots, etc.)
+    // Alert tracking - prevents duplicate notifications when pending->posted
+    alertedAt: timestamp("alerted_at"), // When we sent an alert for this transaction (null = not alerted)
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

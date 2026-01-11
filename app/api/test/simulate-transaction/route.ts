@@ -40,6 +40,7 @@ function createFakeTransaction(
     tags: null,
     notes: null,
     attachments: null,
+    alertedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
