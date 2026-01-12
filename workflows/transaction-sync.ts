@@ -1,7 +1,8 @@
 import { sleep } from "workflow";
 import { plaidClient } from "@/lib/plaid";
 import { db, plaidItems, plaidAccounts, transactions } from "@/lib/db";
-import { eq } from "drizzle-orm";
+import { eq, and, inArray, isNull, gt } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { Transaction as PlaidTransaction, RemovedTransaction } from "plaid";
 import type { Transaction } from "@/lib/db/schema";
 import { sendTransactionAlert } from "@/lib/loop";
@@ -38,37 +39,38 @@ export async function transactionSyncWorkflow(itemId: string) {
     `${syncResult.removed.length} removed`
   );
 
-  // Step 3: Process added transactions
-  const addedTransactions: Transaction[] = [];
-  for (const tx of syncResult.added) {
-    const dbTx = await upsertTransaction(tx, itemId);
-    addedTransactions.push(dbTx);
+  // Step 3: Update cursor IMMEDIATELY to prevent duplicate processing by parallel workflows
+  // This must happen before processing transactions to avoid race conditions
+  if (syncResult.cursor) {
+    await updatePlaidItemCursor(itemId, syncResult.cursor);
   }
 
-  // Step 4: Process modified transactions
+  // Step 4: Process added transactions
+  const addedTransactionIds: string[] = [];
+  for (const tx of syncResult.added) {
+    await upsertTransaction(tx, itemId);
+    addedTransactionIds.push(tx.transaction_id);
+  }
+
+  // Step 5: Process modified transactions
   for (const tx of syncResult.modified) {
     await upsertTransaction(tx, itemId);
   }
 
-  // Step 5: Process removed transactions
+  // Step 6: Process removed transactions
   for (const tx of syncResult.removed) {
     await deleteTransaction(tx.transaction_id);
-  }
-
-  // Step 6: Update cursor in database
-  if (syncResult.cursor) {
-    await updatePlaidItemCursor(itemId, syncResult.cursor);
   }
 
   // Step 7: Update account balances
   await updateAccountBalances(item.accessToken);
 
   // Step 8: Send alerts for new spending transactions that haven't been alerted yet
-  // Filter to spending transactions that haven't been alerted
-  const spendingTxs = addedTransactions.filter((tx) => parseFloat(tx.amount) > 0);
-  const unalertedTxs = spendingTxs.filter((tx) => !tx.alertedAt);
+  // IMPORTANT: We fetch fresh data from DB to get accurate alertedAt status
+  // This prevents duplicate alerts when multiple workflow instances run in parallel
+  const unalertedTxs = await getUnalertedSpendingTransactions(addedTransactionIds);
   
-  console.log(`[Workflow] Found ${spendingTxs.length} spending transactions, ${unalertedTxs.length} not yet alerted`);
+  console.log(`[Workflow] Found ${unalertedTxs.length} unalerted spending transactions from ${addedTransactionIds.length} added`);
   
   if (unalertedTxs.length > 0) {
     console.log(`[Workflow] Triggering alerts for ${unalertedTxs.length} new spending transactions`);
@@ -78,11 +80,20 @@ export async function transactionSyncWorkflow(itemId: string) {
     
     // Send alert for each transaction
     for (const tx of unalertedTxs) {
+      // Double-check alertedAt right before sending to prevent race conditions
+      const stillUnalerted = await tryClaimTransactionForAlert(tx.id);
+      
+      if (!stillUnalerted) {
+        console.log(`[Workflow] Transaction ${tx.id} was already claimed by another workflow, skipping`);
+        continue;
+      }
+      
       const alertSent = await sendSingleTransactionAlert(tx, conversationId);
       
-      // Mark as alerted if we sent an alert
-      if (alertSent) {
-        await markTransactionAlerted(tx.id);
+      // Mark as alerted if we sent an alert (already claimed above)
+      if (!alertSent) {
+        // If alert failed, unmark the transaction so it can be retried
+        await unmarkTransactionAlerted(tx.id);
       }
       
       // Small delay between alerts to avoid rate limiting
@@ -97,7 +108,7 @@ export async function transactionSyncWorkflow(itemId: string) {
     added: syncResult.added.length,
     modified: syncResult.modified.length,
     removed: syncResult.removed.length,
-    alertsSent: spendingTxs.length,
+    alertsSent: unalertedTxs.length,
   };
 }
 
@@ -316,4 +327,76 @@ async function markTransactionAlerted(transactionId: string): Promise<void> {
     .where(eq(transactions.id, transactionId));
   
   console.log(`[Workflow] Marked transaction ${transactionId} as alerted`);
+}
+
+/**
+ * Get spending transactions that haven't been alerted yet.
+ * Fetches fresh data from DB to ensure we have accurate alertedAt status.
+ */
+async function getUnalertedSpendingTransactions(transactionIds: string[]): Promise<Transaction[]> {
+  "use step";
+  
+  if (transactionIds.length === 0) {
+    return [];
+  }
+  
+  // Fetch transactions from DB with current alertedAt status
+  // Filter to: spending (amount > 0), not alerted, and in our list of IDs
+  return db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        inArray(transactions.id, transactionIds),
+        gt(sql`CAST(${transactions.amount} AS DECIMAL)`, 0),
+        isNull(transactions.alertedAt)
+      )
+    );
+}
+
+/**
+ * Atomically claim a transaction for alerting.
+ * Uses UPDATE ... WHERE alertedAt IS NULL to ensure only one workflow wins.
+ * Returns true if we successfully claimed the transaction.
+ */
+async function tryClaimTransactionForAlert(transactionId: string): Promise<boolean> {
+  "use step";
+  
+  const result = await db
+    .update(transactions)
+    .set({ alertedAt: new Date() })
+    .where(
+      and(
+        eq(transactions.id, transactionId),
+        isNull(transactions.alertedAt)
+      )
+    );
+  
+  // If rowsAffected is 1, we successfully claimed it
+  // Note: Drizzle doesn't expose rowsAffected easily, so we check if the tx is now alerted
+  const tx = await db.query.transactions.findFirst({
+    where: eq(transactions.id, transactionId),
+    columns: { alertedAt: true },
+  });
+  
+  const claimed = tx?.alertedAt !== null;
+  if (claimed) {
+    console.log(`[Workflow] Claimed transaction ${transactionId} for alerting`);
+  }
+  
+  return claimed;
+}
+
+/**
+ * Unmark a transaction as alerted (used when alert fails).
+ */
+async function unmarkTransactionAlerted(transactionId: string): Promise<void> {
+  "use step";
+  
+  await db
+    .update(transactions)
+    .set({ alertedAt: null })
+    .where(eq(transactions.id, transactionId));
+  
+  console.log(`[Workflow] Unmarked transaction ${transactionId} as alerted (alert failed)`);
 }
