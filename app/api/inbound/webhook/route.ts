@@ -42,9 +42,9 @@ export async function POST(request: NextRequest) {
 
     // Trigger a transaction refresh whenever we receive an email
     // This allows bank notification emails to trigger immediate syncs
-    await start(refreshTransactionsWorkflow, []);
+    await start(refreshTransactionsWorkflow, [{ fromEmail: true }]);
 
-    console.log("[Inbound Webhook] Started refresh workflow");
+    console.log("[Inbound Webhook] Started refresh workflow (fromEmail: true)");
 
     return NextResponse.json({
       success: true,

@@ -1,4 +1,3 @@
-import { sleep } from "workflow";
 import { plaidClient } from "@/lib/plaid";
 import { db, plaidItems, plaidAccounts } from "@/lib/db";
 import { eq } from "drizzle-orm";
@@ -6,50 +5,41 @@ import { eq } from "drizzle-orm";
 // Platinum card mask to refresh
 const PLATINUM_MASK = "1002";
 
-// Max random delay in minutes (0-15 to stay within the 30-min window)
-const MAX_DELAY_MINUTES = 15;
+interface RefreshOptions {
+  /** If true, skip operating hours check (e.g., triggered by email) */
+  fromEmail?: boolean;
+}
 
 /**
- * Workflow to refresh Plaid transactions with a random delay.
- * This makes refresh times unpredictable while still running hourly.
+ * Workflow to refresh Plaid transactions.
+ * When triggered by email, runs immediately without operating hours check.
+ * When triggered by cron, respects operating hours (9am-9pm EST).
  */
-export async function refreshTransactionsWorkflow() {
+export async function refreshTransactionsWorkflow(options: RefreshOptions = {}) {
   "use workflow";
 
-  // Step 1: Check operating hours
-  const shouldRun = await checkOperatingHours();
-  if (!shouldRun.withinHours) {
-    console.log(`[Workflow] Skipping - outside operating hours (${shouldRun.hour}:00 EST)`);
-    return { 
-      skipped: true, 
-      reason: `Outside operating hours (${shouldRun.hour}:00 EST)` 
-    };
+  const { fromEmail = false } = options;
+
+  // Check operating hours (skip if triggered by email)
+  if (!fromEmail) {
+    const shouldRun = await checkOperatingHours();
+    if (!shouldRun.withinHours) {
+      console.log(`[Workflow] Skipping - outside operating hours (${shouldRun.hour}:00 EST)`);
+      return { 
+        skipped: true, 
+        reason: `Outside operating hours (${shouldRun.hour}:00 EST)` 
+      };
+    }
+  } else {
+    console.log("[Workflow] Email trigger - skipping operating hours check");
   }
 
-  // Step 2: Calculate and apply random delay
-  const delayMinutes = Math.floor(Math.random() * MAX_DELAY_MINUTES);
-  console.log(`[Workflow] Sleeping for ${delayMinutes} minutes before refresh...`);
-  
-  // Sleep for random duration (doesn't consume resources!)
-  await sleep(`${delayMinutes}m`);
-
-  // Step 3: Re-check operating hours after delay
-  const afterDelay = await checkOperatingHours();
-  if (!afterDelay.withinHours) {
-    console.log(`[Workflow] Skipping after delay - now outside operating hours (${afterDelay.hour}:00 EST)`);
-    return { 
-      skipped: true, 
-      reason: `After ${delayMinutes}min delay, now outside operating hours`,
-      delayMinutes 
-    };
-  }
-
-  // Step 4: Refresh transactions
+  // Refresh transactions immediately
   const result = await refreshPlaidTransactions();
   
   return {
     success: true,
-    delayMinutes,
+    fromEmail,
     ...result,
   };
 }
