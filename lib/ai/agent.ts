@@ -1509,12 +1509,21 @@ export async function generateResponse(
   // Add Supermemory tools for explicit memory operations
   const supermemoryApiKey = getSupermemoryApiKey();
   const memoryTools = supermemoryTools(supermemoryApiKey, { containerTags: [containerTag] });
-  const tools = {
+  
+  // Build tools object, filtering out any undefined memory tools
+  const tools: Record<string, any> = {
     ...baseTools,
-    // Cast to any to avoid TypeScript version mismatch between supermemory and ai SDK
-    searchMemories: memoryTools.searchMemories as any,
-    addMemory: memoryTools.addMemory as any,
   };
+  
+  // Only add memory tools if they're defined
+  if (memoryTools?.searchMemories) {
+    tools.searchMemories = memoryTools.searchMemories;
+  }
+  if (memoryTools?.addMemory) {
+    tools.addMemory = memoryTools.addMemory;
+  }
+  
+  console.log(`[Agent] Tools available: ${Object.keys(tools).join(', ')}`);
 
   // Wrap the model with Supermemory for automatic profile injection and memory saving
   // IMPORTANT: Supermemory's middleware doesn't properly handle multi-part messages with images,
