@@ -344,3 +344,51 @@ export type WhoopSleep = typeof whoopSleep.$inferSelect;
 export type NewWhoopSleep = typeof whoopSleep.$inferInsert;
 export type WhoopRecovery = typeof whoopRecovery.$inferSelect;
 export type NewWhoopRecovery = typeof whoopRecovery.$inferInsert;
+
+// ==========================================
+// Reminder Tables
+// ==========================================
+
+// Reminders for user notifications
+export const reminders = pgTable(
+  "reminders",
+  {
+    id: text("id").primaryKey(), // rem_xxxxx format
+    phoneNumber: text("phone_number").notNull(), // E.164 format
+    message: text("message").notNull(), // What to remind about
+    triggerAt: timestamp("trigger_at").notNull(), // When to send reminder
+
+    // Confirmation settings
+    requiresConfirmation: boolean("requires_confirmation").default(false).notNull(),
+    confirmationType: text("confirmation_type"), // "text" | "photo" | null
+
+    // Recurrence (null = one-time)
+    recurrence: text("recurrence"), // "daily" | "weekly" | "monthly" | null
+    recurrenceTime: text("recurrence_time"), // HH:MM in EST
+    recurrenceDays: text("recurrence_days"), // JSON array for weekly: ["mon","wed","fri"]
+
+    // Status tracking
+    status: text("status").notNull().default("pending"), // pending | triggered | confirmed | cancelled
+    triggeredAt: timestamp("triggered_at"), // When we sent the reminder
+    confirmedAt: timestamp("confirmed_at"), // When user confirmed
+
+    // Follow-up tracking
+    followUpCount: integer("follow_up_count").default(0).notNull(),
+    lastFollowUpAt: timestamp("last_follow_up_at"),
+
+    // Context
+    originalContext: text("original_context"), // Store original request for AI context
+
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("reminders_phone_idx").on(table.phoneNumber),
+    index("reminders_status_idx").on(table.status),
+    index("reminders_trigger_at_idx").on(table.triggerAt),
+  ]
+);
+
+// Types for Reminder tables
+export type Reminder = typeof reminders.$inferSelect;
+export type NewReminder = typeof reminders.$inferInsert;

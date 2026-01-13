@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/weekly-summary",
       "schedule": "0 23 * * 0"
+    },
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "* * * * *"
     }
   ]
 }

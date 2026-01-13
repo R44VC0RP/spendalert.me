@@ -2,7 +2,9 @@ import { generateText, tool, stepCountIs } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { withSupermemory, supermemoryTools } from "@supermemory/tools/ai-sdk";
 import { z } from "zod";
-import { db, transactions, aiMessages, aiConversations, whoopTokens, whoopSleep, whoopRecovery } from "@/lib/db";
+import { db, transactions, aiMessages, aiConversations, whoopTokens, whoopSleep, whoopRecovery, reminders } from "@/lib/db";
+import { parseNaturalTime, formatRelativeTime, formatDateEST } from "@/lib/time-parser";
+import { nanoid } from "nanoid";
 import { eq, desc, and, gte, lte, gt, lt, like, or, sql } from "drizzle-orm";
 import type { Transaction, AiMessage } from "@/lib/db/schema";
 import { WhoopClient, refreshAccessToken, formatDuration } from "@/lib/whoop";
@@ -115,7 +117,22 @@ memory & personalization:
 - you can also explicitly save a memory using addMemory tool for important things
 - use searchMemories tool to recall specific past conversations or find relevant memories
 - example things to remember: "my eating out budget is $400/month", "i want to cut back on coffee", "my name is Ryan"
-- use their memories to personalize responses - if you know their budget, mention when they're close to it`;
+- use their memories to personalize responses - if you know their budget, mention when they're close to it
+
+reminders:
+- users can ask you to set reminders: "remind me to take out trash in 2 hours", "remind me to call mom tomorrow at 3pm"
+- use setReminder tool with natural language times - all times are interpreted as EST
+- supported formats: "in 30 minutes", "in an hour", "tomorrow at 9am", "next monday at 3pm", "every day at 8am"
+- you can require confirmation: if they say "remind me to move laundry and send a pic when done", set requiresConfirmation: true and confirmationType: "photo"
+- if they just want to be reminded without confirmation, leave requiresConfirmation as false
+- for important tasks where completion matters, suggest requiring confirmation
+- use listReminders to show their pending reminders
+- use cancelReminder to cancel reminders - can search by keyword like "cancel my laundry reminder"
+- when a reminder triggers and the user responds (text or photo), use confirmReminder to mark it done
+- when confirming, respond naturally: "nice, laundry's done!" or "got it, marked as done"
+- if user sends a photo that looks like proof of a completed task, confirm the reminder and acknowledge it
+- recurring reminders automatically reschedule after confirmation
+- available reminder tools: setReminder, cancelReminder, listReminders, confirmReminder`;
 
 // Get current date/time in EST
 function getCurrentDateTimeEST(): { date: string; time: string; dayOfWeek: string } {
@@ -293,10 +310,14 @@ async function loadConversationContext(conversationId: string): Promise<Conversa
 
   console.log(`[Agent] Found ${recentTxs.length} transactions from last 30 days`);
 
-  const formattedMessages = messages.reverse().map((m) => ({
-    role: m.role as "user" | "assistant",
-    content: m.content,
-  }));
+  // Filter out messages with null/empty content and format them
+  const formattedMessages = messages
+    .reverse()
+    .filter((m) => m.content != null && m.content.trim() !== "")
+    .map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
 
   // Log conversation history
   console.log(`[Agent] === CONVERSATION HISTORY (${formattedMessages.length} messages) ===`);
@@ -1027,6 +1048,289 @@ const transactionTools = {
   }),
 };
 
+// Reminder tools - these need phoneNumber passed in, so they're created separately
+function createReminderTools(phoneNumber: string) {
+  return {
+    setReminder: tool({
+      description: "Set a reminder for the user. Supports natural language times like 'in an hour', 'tomorrow at 9am', 'every day at 8am'. Can require confirmation (text acknowledgment or photo proof). All times are interpreted as EST.",
+      inputSchema: z.object({
+        message: z.string().describe("What to remind the user about"),
+        when: z.string().describe("When to trigger: 'in 1 hour', 'tomorrow at 9am', 'every monday at 10am', etc."),
+        requiresConfirmation: z.boolean().optional().describe("If true, will follow up until user confirms they did it"),
+        confirmationType: z.enum(["text", "photo"]).optional().describe("How user should confirm: 'text' (any reply) or 'photo' (must send image)"),
+      }),
+      execute: async ({ message, when, requiresConfirmation, confirmationType }) => {
+        const parsed = parseNaturalTime(when);
+
+        if (!parsed) {
+          return {
+            success: false,
+            error: `Couldn't understand the time "${when}". Try something like "in 30 minutes", "tomorrow at 9am", or "every monday at 10am".`,
+          };
+        }
+
+        // Validate the time is in the future
+        if (parsed.triggerAt <= new Date()) {
+          return {
+            success: false,
+            error: "The reminder time is in the past. Please specify a future time.",
+          };
+        }
+
+        const id = `rem_${nanoid(12)}`;
+
+        await db.insert(reminders).values({
+          id,
+          phoneNumber,
+          message,
+          triggerAt: parsed.triggerAt,
+          requiresConfirmation: requiresConfirmation || false,
+          confirmationType: requiresConfirmation ? (confirmationType || "text") : null,
+          recurrence: parsed.recurrence || null,
+          recurrenceTime: parsed.recurrenceTime || null,
+          recurrenceDays: parsed.recurrenceDays ? JSON.stringify(parsed.recurrenceDays) : null,
+          status: "pending",
+          originalContext: when,
+        });
+
+        return {
+          success: true,
+          reminderId: id,
+          message,
+          triggerAt: parsed.triggerAt.toISOString(),
+          triggerAtFormatted: formatDateEST(parsed.triggerAt),
+          triggerIn: formatRelativeTime(parsed.triggerAt),
+          isRecurring: parsed.isRecurring,
+          recurrence: parsed.recurrence,
+          requiresConfirmation: requiresConfirmation || false,
+          confirmationType: requiresConfirmation ? (confirmationType || "text") : null,
+        };
+      },
+    }),
+
+    cancelReminder: tool({
+      description: "Cancel a pending reminder. Can cancel by ID or find the most recent reminder matching a description.",
+      inputSchema: z.object({
+        reminderId: z.string().optional().describe("The reminder ID to cancel (rem_xxx)"),
+        searchTerm: z.string().optional().describe("Search term to find the reminder (e.g., 'laundry', 'call mom')"),
+      }),
+      execute: async ({ reminderId, searchTerm }) => {
+        let reminderToCancel;
+
+        if (reminderId) {
+          reminderToCancel = await db.query.reminders.findFirst({
+            where: and(
+              eq(reminders.id, reminderId),
+              eq(reminders.phoneNumber, phoneNumber),
+              or(eq(reminders.status, "pending"), eq(reminders.status, "triggered"))
+            ),
+          });
+        } else if (searchTerm) {
+          // Find most recent pending/triggered reminder matching the search term
+          const matching = await db
+            .select()
+            .from(reminders)
+            .where(
+              and(
+                eq(reminders.phoneNumber, phoneNumber),
+                or(eq(reminders.status, "pending"), eq(reminders.status, "triggered")),
+                like(reminders.message, `%${searchTerm}%`)
+              )
+            )
+            .orderBy(desc(reminders.createdAt))
+            .limit(1);
+
+          reminderToCancel = matching[0];
+        } else {
+          return { success: false, error: "Please provide either a reminder ID or a search term" };
+        }
+
+        if (!reminderToCancel) {
+          return { success: false, error: "No matching pending reminder found" };
+        }
+
+        await db
+          .update(reminders)
+          .set({ status: "cancelled", updatedAt: new Date() })
+          .where(eq(reminders.id, reminderToCancel.id));
+
+        return {
+          success: true,
+          cancelled: {
+            id: reminderToCancel.id,
+            message: reminderToCancel.message,
+            wasScheduledFor: formatDateEST(reminderToCancel.triggerAt),
+          },
+        };
+      },
+    }),
+
+    listReminders: tool({
+      description: "List the user's reminders. By default shows only pending/active reminders.",
+      inputSchema: z.object({
+        includeCompleted: z.boolean().optional().describe("Include completed/cancelled reminders in the list"),
+      }),
+      execute: async ({ includeCompleted }) => {
+        const conditions = [eq(reminders.phoneNumber, phoneNumber)];
+        
+        if (!includeCompleted) {
+          conditions.push(or(eq(reminders.status, "pending"), eq(reminders.status, "triggered"))!);
+        }
+
+        const userReminders = await db
+          .select()
+          .from(reminders)
+          .where(and(...conditions))
+          .orderBy(reminders.triggerAt)
+          .limit(20);
+
+        if (userReminders.length === 0) {
+          return {
+            count: 0,
+            message: "No reminders found",
+            reminders: [],
+          };
+        }
+
+        return {
+          count: userReminders.length,
+          reminders: userReminders.map((r) => ({
+            id: r.id,
+            message: r.message,
+            triggerAt: formatDateEST(r.triggerAt),
+            triggerIn: formatRelativeTime(r.triggerAt),
+            status: r.status,
+            isRecurring: !!r.recurrence,
+            recurrence: r.recurrence,
+            requiresConfirmation: r.requiresConfirmation,
+            confirmationType: r.confirmationType,
+          })),
+        };
+      },
+    }),
+
+    confirmReminder: tool({
+      description: "Mark a triggered reminder as confirmed/completed. Use this when the user indicates they've done the task, either via text or by sending a photo. You can also use this to acknowledge completion of a reminder.",
+      inputSchema: z.object({
+        reminderId: z.string().optional().describe("The specific reminder ID to confirm (rem_xxx)"),
+        searchTerm: z.string().optional().describe("Search term to find the reminder to confirm (e.g., 'laundry')"),
+      }),
+      execute: async ({ reminderId, searchTerm }) => {
+        let reminderToConfirm;
+
+        if (reminderId) {
+          reminderToConfirm = await db.query.reminders.findFirst({
+            where: and(
+              eq(reminders.id, reminderId),
+              eq(reminders.phoneNumber, phoneNumber),
+              eq(reminders.status, "triggered")
+            ),
+          });
+        } else if (searchTerm) {
+          // Find the most recent triggered reminder matching the search term
+          const matching = await db
+            .select()
+            .from(reminders)
+            .where(
+              and(
+                eq(reminders.phoneNumber, phoneNumber),
+                eq(reminders.status, "triggered"),
+                like(reminders.message, `%${searchTerm}%`)
+              )
+            )
+            .orderBy(desc(reminders.triggeredAt))
+            .limit(1);
+
+          reminderToConfirm = matching[0];
+        } else {
+          // If no ID or search term, find the most recent triggered reminder
+          const recent = await db
+            .select()
+            .from(reminders)
+            .where(
+              and(
+                eq(reminders.phoneNumber, phoneNumber),
+                eq(reminders.status, "triggered")
+              )
+            )
+            .orderBy(desc(reminders.triggeredAt))
+            .limit(1);
+
+          reminderToConfirm = recent[0];
+        }
+
+        if (!reminderToConfirm) {
+          return { success: false, error: "No triggered reminder found to confirm" };
+        }
+
+        const now = new Date();
+
+        // If it's a recurring reminder, schedule the next occurrence
+        if (reminderToConfirm.recurrence && reminderToConfirm.recurrenceTime) {
+          const [hours, minutes] = reminderToConfirm.recurrenceTime.split(":").map(Number);
+          const nextTrigger = new Date();
+
+          switch (reminderToConfirm.recurrence) {
+            case "daily":
+              nextTrigger.setDate(nextTrigger.getDate() + 1);
+              break;
+            case "weekly":
+              nextTrigger.setDate(nextTrigger.getDate() + 7);
+              break;
+            case "monthly":
+              nextTrigger.setMonth(nextTrigger.getMonth() + 1);
+              break;
+          }
+
+          nextTrigger.setHours(hours, minutes, 0, 0);
+
+          await db
+            .update(reminders)
+            .set({
+              triggerAt: nextTrigger,
+              status: "pending",
+              triggeredAt: null,
+              confirmedAt: null,
+              followUpCount: 0,
+              lastFollowUpAt: null,
+              updatedAt: now,
+            })
+            .where(eq(reminders.id, reminderToConfirm.id));
+
+          return {
+            success: true,
+            confirmed: {
+              id: reminderToConfirm.id,
+              message: reminderToConfirm.message,
+            },
+            nextOccurrence: formatDateEST(nextTrigger),
+            isRecurring: true,
+          };
+        } else {
+          // One-time reminder - mark as confirmed
+          await db
+            .update(reminders)
+            .set({
+              status: "confirmed",
+              confirmedAt: now,
+              updatedAt: now,
+            })
+            .where(eq(reminders.id, reminderToConfirm.id));
+
+          return {
+            success: true,
+            confirmed: {
+              id: reminderToConfirm.id,
+              message: reminderToConfirm.message,
+            },
+            isRecurring: false,
+          };
+        }
+      },
+    }),
+  };
+}
+
 // Type for the message sender callback
 type MessageSender = (message: string) => Promise<void>;
 
@@ -1051,10 +1355,15 @@ function createTools(
   state: ToolState,
   sendMessageFn?: MessageSender,
   sendReactionFn?: ReactionSender,
-  inboundMessageId?: string
+  inboundMessageId?: string,
+  phoneNumber?: string
 ) {
+  // Get reminder tools if phoneNumber is available
+  const reminderTools = phoneNumber ? createReminderTools(phoneNumber) : {};
+
   return {
     ...transactionTools,
+    ...reminderTools,
     
     sendMessage: tool({
       description: "Send an interim text message to the user while you continue working. Use this to acknowledge their question, say you're looking something up, or share partial findings before your final response. Makes the conversation feel more natural.",
@@ -1149,9 +1458,15 @@ export async function generateResponse(
     // Multi-part message with images
     const parts: Array<{ type: "text"; text: string } | { type: "image"; image: URL }> = [];
     
-    // Add images first
+    // Add images first - filter out any invalid URLs
     for (const url of imageUrls) {
-      parts.push({ type: "image", image: new URL(url) });
+      if (url && typeof url === 'string' && url.trim()) {
+        try {
+          parts.push({ type: "image", image: new URL(url) });
+        } catch (e) {
+          console.warn(`[Agent] Invalid image URL skipped: ${url}`);
+        }
+      }
     }
     
     // Add text (or a prompt if no text)
@@ -1160,11 +1475,14 @@ export async function generateResponse(
     
     userContent = parts;
   } else {
-    userContent = userMessage;
+    userContent = userMessage || "";
   }
 
+  // Ensure all messages have valid content (filter out any with null/undefined content)
+  const validContextMessages = context.messages.filter(m => m.content != null && m.content !== "");
+  
   const messagesForAI = [
-    ...context.messages,
+    ...validContextMessages,
     { role: "user" as const, content: userContent },
   ];
 
@@ -1186,7 +1504,7 @@ export async function generateResponse(
 
   // Create state tracker and tools
   const state: ToolState = { noResponseCalled: false, didReact: false };
-  const baseTools = createTools(state, sendMessageFn, sendReactionFn, inboundMessageId);
+  const baseTools = createTools(state, sendMessageFn, sendReactionFn, inboundMessageId, phoneNumber);
   
   // Add Supermemory tools for explicit memory operations
   const supermemoryApiKey = getSupermemoryApiKey();
@@ -1199,21 +1517,65 @@ export async function generateResponse(
   };
 
   // Wrap the model with Supermemory for automatic profile injection and memory saving
+  // IMPORTANT: Supermemory's middleware doesn't properly handle multi-part messages with images,
+  // so we bypass it when images are present to avoid Object.entries errors
   const baseModel = anthropic("claude-opus-4-5");
-  const modelWithMemory = withSupermemory(baseModel, containerTag, {
-    apiKey: supermemoryApiKey,
-    mode: "full", // Use both profile and query-based memory search
-    addMemory: "always", // Automatically save memories from conversations
-  });
+  const hasImages = imageUrls && imageUrls.length > 0;
+  
+  const model = hasImages 
+    ? baseModel  // Use base model directly for image messages (Supermemory doesn't support image parts)
+    : withSupermemory(baseModel, containerTag, {
+        apiKey: supermemoryApiKey,
+        mode: "full", // Use both profile and query-based memory search
+        addMemory: "always", // Automatically save memories from conversations
+      });
+  
+  if (hasImages) {
+    console.log(`[Agent] Using base model (bypassing Supermemory) due to image content`);
+  }
 
   const startTime = Date.now();
-  const { text, steps, toolCalls, toolResults } = await generateText({
-    model: modelWithMemory,
-    system: systemPrompt,
-    messages: messagesForAI,
-    tools,
-    stopWhen: stepCountIs(5), // Allow multiple tool calls if needed
+  
+  // Log the structure being sent to AI for debugging
+  console.log(`[Agent] Messages structure check:`);
+  messagesForAI.forEach((m, i) => {
+    const contentType = Array.isArray(m.content) ? `array[${m.content.length}]` : typeof m.content;
+    console.log(`[Agent]   [${i}] role=${m.role}, content type=${contentType}`);
+    if (Array.isArray(m.content)) {
+      m.content.forEach((part, j) => {
+        console.log(`[Agent]     [${j}] type=${part.type}, hasValue=${'text' in part ? !!part.text : 'image' in part ? !!part.image : 'unknown'}`);
+      });
+    }
   });
+  
+  let text: string | undefined;
+  let steps: any;
+  let toolCalls: any;
+  let toolResults: any;
+  
+  try {
+    const result = await generateText({
+      model,
+      system: systemPrompt,
+      messages: messagesForAI,
+      tools,
+      stopWhen: stepCountIs(5), // Allow multiple tool calls if needed
+    });
+    text = result.text;
+    steps = result.steps;
+    toolCalls = result.toolCalls;
+    toolResults = result.toolResults;
+  } catch (error) {
+    console.error(`[Agent] generateText error:`, error);
+    console.error(`[Agent] Error details:`, {
+      name: error instanceof Error ? error.name : 'unknown',
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    // Re-throw to let the caller handle it
+    throw error;
+  }
+  
   const duration = Date.now() - startTime;
 
   console.log(`[Agent] AI response received in ${duration}ms`);
@@ -1223,7 +1585,7 @@ export async function generateResponse(
   
   if (toolCalls && toolCalls.length > 0) {
     console.log(`[Agent] === TOOL CALLS ===`);
-    toolCalls.forEach((tc, i) => {
+    toolCalls.forEach((tc: { toolName: string; args?: unknown }, i: number) => {
       const args = 'args' in tc ? tc.args : {};
       console.log(`[Agent]   [${i + 1}] ${tc.toolName}(${JSON.stringify(args).substring(0, 200)})`);
     });
